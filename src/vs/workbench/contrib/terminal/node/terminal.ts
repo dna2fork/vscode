@@ -5,77 +5,25 @@
 
 import * as os from 'os';
 import * as platform from 'vs/base/common/platform';
-import * as processes from 'vs/base/node/processes';
 import { readFile, fileExists, stat } from 'vs/base/node/pfs';
 import { LinuxDistro, IShellDefinition } from 'vs/workbench/contrib/terminal/common/terminal';
 import { coalesce } from 'vs/base/common/arrays';
 import { normalize, basename } from 'vs/base/common/path';
 
-/**
- * Gets the detected default shell for the _system_, not to be confused with VS Code's _default_
- * shell that the terminal uses by default.
- * @param p The platform to detect the shell of.
- */
-export function getSystemShell(p: platform.Platform): string {
-	if (p === platform.Platform.Windows) {
-		if (platform.isWindows) {
-			return getSystemShellWindows();
-		}
-		// Don't detect Windows shell when not on Windows
-		return processes.getWindowsShell();
-	}
-	// Only use $SHELL for the current OS
-	if (platform.isLinux && p === platform.Platform.Mac || platform.isMacintosh && p === platform.Platform.Linux) {
-		return '/bin/bash';
-	}
-	return getSystemShellUnixLike();
-}
-
-let _TERMINAL_DEFAULT_SHELL_UNIX_LIKE: string | null = null;
-function getSystemShellUnixLike(): string {
-	if (!_TERMINAL_DEFAULT_SHELL_UNIX_LIKE) {
-		let unixLikeTerminal = 'sh';
-		if (!platform.isWindows && process.env.SHELL) {
-			unixLikeTerminal = process.env.SHELL;
-			// Some systems have $SHELL set to /bin/false which breaks the terminal
-			if (unixLikeTerminal === '/bin/false') {
-				unixLikeTerminal = '/bin/bash';
-			}
-		}
-		if (platform.isWindows) {
-			unixLikeTerminal = '/bin/bash'; // for WSL
-		}
-		_TERMINAL_DEFAULT_SHELL_UNIX_LIKE = unixLikeTerminal;
-	}
-	return _TERMINAL_DEFAULT_SHELL_UNIX_LIKE;
-}
-
-let _TERMINAL_DEFAULT_SHELL_WINDOWS: string | null = null;
-function getSystemShellWindows(): string {
-	if (!_TERMINAL_DEFAULT_SHELL_WINDOWS) {
-		const isAtLeastWindows10 = platform.isWindows && parseFloat(os.release()) >= 10;
-		const is32ProcessOn64Windows = process.env.hasOwnProperty('PROCESSOR_ARCHITEW6432');
-		const powerShellPath = `${process.env.windir}\\${is32ProcessOn64Windows ? 'Sysnative' : 'System32'}\\WindowsPowerShell\\v1.0\\powershell.exe`;
-		_TERMINAL_DEFAULT_SHELL_WINDOWS = isAtLeastWindows10 ? powerShellPath : processes.getWindowsShell();
-	}
-	return _TERMINAL_DEFAULT_SHELL_WINDOWS;
-}
-
 let detectedDistro = LinuxDistro.Unknown;
 if (platform.isLinux) {
 	const file = '/etc/os-release';
-	fileExists(file).then(exists => {
+	fileExists(file).then(async exists => {
 		if (!exists) {
 			return;
 		}
-		readFile(file).then(b => {
-			const contents = b.toString();
-			if (/NAME="?Fedora"?/.test(contents)) {
-				detectedDistro = LinuxDistro.Fedora;
-			} else if (/NAME="?Ubuntu"?/.test(contents)) {
-				detectedDistro = LinuxDistro.Ubuntu;
-			}
-		});
+		const buffer = await readFile(file);
+		const contents = buffer.toString();
+		if (/NAME="?Fedora"?/.test(contents)) {
+			detectedDistro = LinuxDistro.Fedora;
+		} else if (/NAME="?Ubuntu"?/.test(contents)) {
+			detectedDistro = LinuxDistro.Ubuntu;
+		}
 	});
 }
 
@@ -110,8 +58,8 @@ async function detectAvailableWindowsShells(): Promise<IShellDefinition[]> {
 
 	const expectedLocations: { [key: string]: string[] } = {
 		'Command Prompt': [`${system32Path}\\cmd.exe`],
-		PowerShell: [`${system32Path}\\WindowsPowerShell\\v1.0\\powershell.exe`],
-		'PowerShell Core': [await getShellPathFromRegistry('pwsh')],
+		'Windows PowerShell': [`${system32Path}\\WindowsPowerShell\\v1.0\\powershell.exe`],
+		'PowerShell': [await getShellPathFromRegistry('pwsh')],
 		'WSL Bash': [`${system32Path}\\${useWSLexe ? 'wsl.exe' : 'bash.exe'}`],
 		'Git Bash': [
 			`${process.env['ProgramW6432']}\\Git\\bin\\bash.exe`,
@@ -120,15 +68,16 @@ async function detectAvailableWindowsShells(): Promise<IShellDefinition[]> {
 			`${process.env['ProgramFiles']}\\Git\\usr\\bin\\bash.exe`,
 			`${process.env['LocalAppData']}\\Programs\\Git\\bin\\bash.exe`,
 		],
-		Cygwin: [
-			`${process.env['HOMEDRIVE']}\\cygwin64\\bin\\bash.exe`,
-			`${process.env['HOMEDRIVE']}\\cygwin\\bin\\bash.exe`
-		]
+		// See #75945
+		// Cygwin: [
+		// 	`${process.env['HOMEDRIVE']}\\cygwin64\\bin\\bash.exe`,
+		// 	`${process.env['HOMEDRIVE']}\\cygwin\\bin\\bash.exe`
+		// ]
 	};
-	const promises: PromiseLike<IShellDefinition | undefined>[] = [];
+	const promises: Promise<IShellDefinition | undefined>[] = [];
 	Object.keys(expectedLocations).forEach(key => promises.push(validateShellPaths(key, expectedLocations[key])));
-
-	return Promise.all(promises).then(coalesce);
+	const shells = await Promise.all(promises);
+	return coalesce(shells);
 }
 
 async function detectAvailableUnixShells(): Promise<IShellDefinition[]> {
@@ -152,7 +101,7 @@ async function validateShellPaths(label: string, potentialPaths: string[]): Prom
 	}
 	try {
 		const result = await stat(normalize(current));
-		if (result.isFile || result.isSymbolicLink) {
+		if (result.isFile() || result.isSymbolicLink()) {
 			return {
 				label,
 				path: current

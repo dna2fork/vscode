@@ -7,6 +7,8 @@ import * as assert from 'assert';
 import { Range } from 'vs/editor/common/core/range';
 import { EndOfLineSequence } from 'vs/editor/common/model';
 import { testViewModel } from 'vs/editor/test/common/viewModel/testViewModel';
+import { ViewEventHandler } from 'vs/editor/common/viewModel/viewEventHandler';
+import { ViewEvent } from 'vs/editor/common/view/viewEvents';
 
 suite('ViewModel', () => {
 
@@ -63,14 +65,16 @@ suite('ViewModel', () => {
 			let viewLineCount: number[] = [];
 
 			viewLineCount.push(viewModel.getLineCount());
-			viewModel.addEventListener((events) => {
-				// Access the view model
-				viewLineCount.push(viewModel.getLineCount());
+			viewModel.addViewEventHandler(new class extends ViewEventHandler {
+				handleEvents(events: ViewEvent[]): void {
+					// Access the view model
+					viewLineCount.push(viewModel.getLineCount());
+				}
 			});
 			model.undo();
 			viewLineCount.push(viewModel.getLineCount());
 
-			assert.deepEqual(viewLineCount, [4, 1, 1, 1]);
+			assert.deepEqual(viewLineCount, [4, 1, 1, 1, 1]);
 		});
 	});
 
@@ -210,7 +214,7 @@ suite('ViewModel', () => {
 				new Range(3, 2, 3, 2),
 			],
 			true,
-			'ine2'
+			['ine2', 'line3']
 		);
 	});
 
@@ -257,5 +261,37 @@ suite('ViewModel', () => {
 			let actual = viewModel.getPlainTextToCopy([new Range(2, 1, 5, 1)], true, true);
 			assert.deepEqual(actual, 'line2\r\nline3\r\nline4\r\n');
 		});
+	});
+
+	test('issue #40926: Incorrect spacing when inserting new line after multiple folded blocks of code', () => {
+		testViewModel(
+			[
+				'foo = {',
+				'    foobar: function() {',
+				'        this.foobar();',
+				'    },',
+				'    foobar: function() {',
+				'        this.foobar();',
+				'    },',
+				'    foobar: function() {',
+				'        this.foobar();',
+				'    },',
+				'}',
+			], {}, (viewModel, model) => {
+				viewModel.setHiddenAreas([
+					new Range(3, 1, 3, 1),
+					new Range(6, 1, 6, 1),
+					new Range(9, 1, 9, 1),
+				]);
+
+				model.applyEdits([
+					{ range: new Range(4, 7, 4, 7), text: '\n    ' },
+					{ range: new Range(7, 7, 7, 7), text: '\n    ' },
+					{ range: new Range(10, 7, 10, 7), text: '\n    ' }
+				]);
+
+				assert.strictEqual(viewModel.getLineCount(), 11);
+			}
+		);
 	});
 });

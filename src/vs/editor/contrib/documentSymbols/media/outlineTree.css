@@ -20,8 +20,9 @@
 	color: var(--outline-element-color);
 }
 
-.monaco-tree .monaco-tree-row.focused .outline-element .outline-element-detail {
-	visibility: inherit;
+.monaco-list .outline-element .monaco-icon-label-container .monaco-highlighted-label,
+.monaco-list .outline-element .monaco-icon-label-container .label-description {
+	white-space: nowrap;
 }
 
 .monaco-list .outline-element .outline-element-decoration {
@@ -35,7 +36,11 @@
 }
 
 .monaco-list .outline-element .outline-element-decoration.bubble {
-	font-family: octicons;
+	font-family: codicon;
 	font-size: 14px;
 	opacity: 0.4;
+}
+
+.monaco-list .outline-element .outline-element-icon {
+	margin-right: 4px;
 }

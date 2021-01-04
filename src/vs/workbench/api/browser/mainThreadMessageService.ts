@@ -39,9 +39,9 @@ export class MainThreadMessageService implements MainThreadMessageServiceShape {
 		}
 	}
 
-	private _showMessage(severity: Severity, message: string, commands: { title: string; isCloseAffordance: boolean; handle: number; }[], extension: IExtensionDescription | undefined): Promise<number> {
+	private _showMessage(severity: Severity, message: string, commands: { title: string; isCloseAffordance: boolean; handle: number; }[], extension: IExtensionDescription | undefined): Promise<number | undefined> {
 
-		return new Promise<number>(resolve => {
+		return new Promise<number | undefined>(resolve => {
 
 			const primaryActions: MessageItemAction[] = [];
 
@@ -97,7 +97,7 @@ export class MainThreadMessageService implements MainThreadMessageServiceShape {
 		});
 	}
 
-	private _showModalMessage(severity: Severity, message: string, commands: { title: string; isCloseAffordance: boolean; handle: number; }[]): Promise<number | undefined> {
+	private async _showModalMessage(severity: Severity, message: string, commands: { title: string; isCloseAffordance: boolean; handle: number; }[]): Promise<number | undefined> {
 		let cancelId: number | undefined = undefined;
 
 		const buttons = commands.map((command, index) => {
@@ -118,7 +118,7 @@ export class MainThreadMessageService implements MainThreadMessageServiceShape {
 			cancelId = buttons.length - 1;
 		}
 
-		return this._dialogService.show(severity, message, buttons, { cancelId })
-			.then(result => result === commands.length ? undefined : commands[result].handle);
+		const { choice } = await this._dialogService.show(severity, message, buttons, { cancelId });
+		return choice === commands.length ? undefined : commands[choice].handle;
 	}
 }

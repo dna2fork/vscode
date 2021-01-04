@@ -4,8 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { KeyCode, KeyMod } from 'vs/base/common/keyCodes';
-import { dispose, DisposableStore } from 'vs/base/common/lifecycle';
-import { repeat } from 'vs/base/common/strings';
+import { DisposableStore } from 'vs/base/common/lifecycle';
 import { ICodeEditor } from 'vs/editor/browser/editorBrowser';
 import { EditorCommand, registerEditorCommand, registerEditorContribution } from 'vs/editor/browser/editorExtensions';
 import { Range } from 'vs/editor/common/core/range';
@@ -19,6 +18,7 @@ import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '
 import { KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { ILogService } from 'vs/platform/log/common/log';
 import { SnippetSession } from './snippetSession';
+import { OvertypingCapturer } from 'vs/editor/contrib/suggest/suggestOvertypingCapturer';
 
 export interface ISnippetInsertOptions {
 	overwriteBefore: number;
@@ -27,6 +27,7 @@ export interface ISnippetInsertOptions {
 	undoStopBefore: boolean;
 	undoStopAfter: boolean;
 	clipboardText: string | undefined;
+	overtypingCapturer: OvertypingCapturer | undefined;
 }
 
 const _defaultOptions: ISnippetInsertOptions = {
@@ -35,18 +36,21 @@ const _defaultOptions: ISnippetInsertOptions = {
 	undoStopBefore: true,
 	undoStopAfter: true,
 	adjustWhitespace: true,
-	clipboardText: undefined
+	clipboardText: undefined,
+	overtypingCapturer: undefined
 };
 
 export class SnippetController2 implements IEditorContribution {
 
+	public static ID = 'snippetController2';
+
 	static get(editor: ICodeEditor): SnippetController2 {
-		return editor.getContribution<SnippetController2>('snippetController2');
+		return editor.getContribution<SnippetController2>(SnippetController2.ID);
 	}
 
-	static InSnippetMode = new RawContextKey('inSnippetMode', false);
-	static HasNextTabstop = new RawContextKey('hasNextTabstop', false);
-	static HasPrevTabstop = new RawContextKey('hasPrevTabstop', false);
+	static readonly InSnippetMode = new RawContextKey('inSnippetMode', false);
+	static readonly HasNextTabstop = new RawContextKey('hasNextTabstop', false);
+	static readonly HasPrevTabstop = new RawContextKey('hasPrevTabstop', false);
 
 	private readonly _inSnippet: IContextKey<boolean>;
 	private readonly _hasNextTabstop: IContextKey<boolean>;
@@ -54,7 +58,7 @@ export class SnippetController2 implements IEditorContribution {
 
 	private _session?: SnippetSession;
 	private _snippetListener = new DisposableStore();
-	private _modelVersionId: number;
+	private _modelVersionId: number = -1;
 	private _currentChoice?: Choice;
 
 	constructor(
@@ -71,12 +75,8 @@ export class SnippetController2 implements IEditorContribution {
 		this._inSnippet.reset();
 		this._hasPrevTabstop.reset();
 		this._hasNextTabstop.reset();
-		dispose(this._session);
+		this._session?.dispose();
 		this._snippetListener.dispose();
-	}
-
-	getId(): string {
-		return 'snippetController2';
 	}
 
 	insert(
@@ -193,7 +193,7 @@ export class SnippetController2 implements IEditorContribution {
 					insertText: option.value,
 					// insertText: `\${1|${after.concat(before).join(',')}|}$0`,
 					// snippetType: 'textmate',
-					sortText: repeat('a', i + 1),
+					sortText: 'a'.repeat(i + 1),
 					range: Range.fromPositions(this._editor.getPosition()!, this._editor.getPosition()!.delta(0, first.value.length))
 				};
 			}));
@@ -211,7 +211,7 @@ export class SnippetController2 implements IEditorContribution {
 		this._hasPrevTabstop.reset();
 		this._hasNextTabstop.reset();
 		this._snippetListener.clear();
-		dispose(this._session);
+		this._session?.dispose();
 		this._session = undefined;
 		this._modelVersionId = -1;
 		if (resetSelection) {
@@ -249,7 +249,7 @@ export class SnippetController2 implements IEditorContribution {
 }
 
 
-registerEditorContribution(SnippetController2);
+registerEditorContribution(SnippetController2.ID, SnippetController2);
 
 const CommandCtor = EditorCommand.bindToContribution<SnippetController2>(SnippetController2.get);
 

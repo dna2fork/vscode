@@ -9,38 +9,27 @@ import { createDecorator } from 'vs/platform/instantiation/common/instantiation'
 import { TernarySearchTree } from 'vs/base/common/map';
 import { Event } from 'vs/base/common/event';
 import { IWorkspaceIdentifier, IStoredWorkspaceFolder, isRawFileWorkspaceFolder, isRawUriWorkspaceFolder, ISingleFolderWorkspaceIdentifier } from 'vs/platform/workspaces/common/workspaces';
+import { IWorkspaceFolderProvider } from 'vs/base/common/labels';
 
 export const IWorkspaceContextService = createDecorator<IWorkspaceContextService>('contextService');
 
-export const enum WorkbenchState {
-	EMPTY = 1,
-	FOLDER,
-	WORKSPACE
-}
-
-export interface IWorkspaceFoldersChangeEvent {
-	added: IWorkspaceFolder[];
-	removed: IWorkspaceFolder[];
-	changed: IWorkspaceFolder[];
-}
-
-export interface IWorkspaceContextService {
-	_serviceBrand: any;
+export interface IWorkspaceContextService extends IWorkspaceFolderProvider {
+	readonly _serviceBrand: undefined;
 
 	/**
 	 * An event which fires on workbench state changes.
 	 */
-	onDidChangeWorkbenchState: Event<WorkbenchState>;
+	readonly onDidChangeWorkbenchState: Event<WorkbenchState>;
 
 	/**
 	 * An event which fires on workspace name changes.
 	 */
-	onDidChangeWorkspaceName: Event<void>;
+	readonly onDidChangeWorkspaceName: Event<void>;
 
 	/**
 	 * An event which fires on workspace folders change.
 	 */
-	onDidChangeWorkspaceFolders: Event<IWorkspaceFoldersChangeEvent>;
+	readonly onDidChangeWorkspaceFolders: Event<IWorkspaceFoldersChangeEvent>;
 
 	/**
 	 * Provides access to the complete workspace object.
@@ -79,11 +68,23 @@ export interface IWorkspaceContextService {
 	isInsideWorkspace(resource: URI): boolean;
 }
 
+export const enum WorkbenchState {
+	EMPTY = 1,
+	FOLDER,
+	WORKSPACE
+}
+
+export interface IWorkspaceFoldersChangeEvent {
+	added: IWorkspaceFolder[];
+	removed: IWorkspaceFolder[];
+	changed: IWorkspaceFolder[];
+}
+
 export namespace IWorkspace {
-	export function isIWorkspace(thing: any): thing is IWorkspace {
-		return thing && typeof thing === 'object'
+	export function isIWorkspace(thing: unknown): thing is IWorkspace {
+		return !!(thing && typeof thing === 'object'
 			&& typeof (thing as IWorkspace).id === 'string'
-			&& Array.isArray((thing as IWorkspace).folders);
+			&& Array.isArray((thing as IWorkspace).folders));
 	}
 }
 
@@ -106,6 +107,7 @@ export interface IWorkspace {
 }
 
 export interface IWorkspaceFolderData {
+
 	/**
 	 * The associated URI for this workspace folder.
 	 */
@@ -113,7 +115,7 @@ export interface IWorkspaceFolderData {
 
 	/**
 	 * The name of this workspace folder. Defaults to
-	 * the basename its [uri-path](#Uri.path)
+	 * the basename of its [uri-path](#Uri.path)
 	 */
 	readonly name: string;
 
@@ -124,11 +126,11 @@ export interface IWorkspaceFolderData {
 }
 
 export namespace IWorkspaceFolder {
-	export function isIWorkspaceFolder(thing: any): thing is IWorkspaceFolder {
-		return thing && typeof thing === 'object'
+	export function isIWorkspaceFolder(thing: unknown): thing is IWorkspaceFolder {
+		return !!(thing && typeof thing === 'object'
 			&& URI.isUri((thing as IWorkspaceFolder).uri)
 			&& typeof (thing as IWorkspaceFolder).name === 'string'
-			&& typeof (thing as IWorkspaceFolder).toResource === 'function';
+			&& typeof (thing as IWorkspaceFolder).toResource === 'function');
 	}
 }
 
@@ -142,13 +144,14 @@ export interface IWorkspaceFolder extends IWorkspaceFolderData {
 
 export class Workspace implements IWorkspace {
 
-	private _foldersMap: TernarySearchTree<WorkspaceFolder> = TernarySearchTree.forPaths<WorkspaceFolder>();
-	private _folders: WorkspaceFolder[];
+	private _foldersMap: TernarySearchTree<URI, WorkspaceFolder> = TernarySearchTree.forUris<WorkspaceFolder>(this._ignorePathCasing);
+	private _folders!: WorkspaceFolder[];
 
 	constructor(
 		private _id: string,
-		folders: WorkspaceFolder[] = [],
-		private _configuration: URI | null = null
+		folders: WorkspaceFolder[],
+		private _configuration: URI | null,
+		private _ignorePathCasing: (key: URI) => boolean,
 	) {
 		this.folders = folders;
 	}
@@ -156,6 +159,7 @@ export class Workspace implements IWorkspace {
 	update(workspace: Workspace) {
 		this._id = workspace.id;
 		this._configuration = workspace.configuration;
+		this._ignorePathCasing = workspace._ignorePathCasing;
 		this.folders = workspace.folders;
 	}
 
@@ -189,13 +193,13 @@ export class Workspace implements IWorkspace {
 			scheme: resource.scheme,
 			authority: resource.authority,
 			path: resource.path
-		}).toString()) || null;
+		})) || null;
 	}
 
 	private updateFoldersMap(): void {
-		this._foldersMap = TernarySearchTree.forPaths<WorkspaceFolder>();
+		this._foldersMap = TernarySearchTree.forUris<WorkspaceFolder>(this._ignorePathCasing);
 		for (const folder of this.folders) {
-			this._foldersMap.set(folder.uri.toString(), folder);
+			this._foldersMap.set(folder.uri, folder);
 		}
 	}
 
@@ -230,16 +234,16 @@ export function toWorkspaceFolder(resource: URI): WorkspaceFolder {
 	return new WorkspaceFolder({ uri: resource, index: 0, name: resources.basenameOrAuthority(resource) }, { uri: resource.toString() });
 }
 
-export function toWorkspaceFolders(configuredFolders: IStoredWorkspaceFolder[], workspaceConfigFile: URI): WorkspaceFolder[] {
+export function toWorkspaceFolders(configuredFolders: IStoredWorkspaceFolder[], workspaceConfigFile: URI, extUri: resources.IExtUri): WorkspaceFolder[] {
 	let result: WorkspaceFolder[] = [];
 	let seen: Set<string> = new Set();
 
-	const relativeTo = resources.dirname(workspaceConfigFile);
+	const relativeTo = extUri.dirname(workspaceConfigFile);
 	for (let configuredFolder of configuredFolders) {
 		let uri: URI | null = null;
 		if (isRawFileWorkspaceFolder(configuredFolder)) {
 			if (configuredFolder.path) {
-				uri = resources.resolvePath(relativeTo, configuredFolder.path);
+				uri = extUri.resolvePath(relativeTo, configuredFolder.path);
 			}
 		} else if (isRawUriWorkspaceFolder(configuredFolder)) {
 			try {
@@ -255,14 +259,15 @@ export function toWorkspaceFolders(configuredFolders: IStoredWorkspaceFolder[], 
 		}
 		if (uri) {
 			// remove duplicates
-			let comparisonKey = resources.getComparisonKey(uri);
+			let comparisonKey = extUri.getComparisonKey(uri);
 			if (!seen.has(comparisonKey)) {
 				seen.add(comparisonKey);
 
-				const name = configuredFolder.name || resources.basenameOrAuthority(uri);
+				const name = configuredFolder.name || extUri.basenameOrAuthority(uri);
 				result.push(new WorkspaceFolder({ uri, name, index: result.length }, configuredFolder));
 			}
 		}
 	}
+
 	return result;
 }

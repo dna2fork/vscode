@@ -5,7 +5,7 @@
 
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { Event } from 'vs/base/common/event';
-import { IRemoteConsoleLog } from 'vs/base/common/console';
+import { IProcessEnvironment } from 'vs/base/common/platform';
 
 export const IExtensionHostDebugService = createDecorator<IExtensionHostDebugService>('extensionHostDebugService');
 
@@ -13,11 +13,6 @@ export interface IAttachSessionEvent {
 	sessionId: string;
 	subId?: string;
 	port: number;
-}
-
-export interface ILogToSessionEvent {
-	sessionId: string;
-	log: IRemoteConsoleLog;
 }
 
 export interface ITerminateSessionEvent {
@@ -33,21 +28,24 @@ export interface ICloseSessionEvent {
 	sessionId: string;
 }
 
+export interface IOpenExtensionWindowResult {
+	rendererDebugPort?: number;
+}
+
 export interface IExtensionHostDebugService {
-	_serviceBrand: any;
+	readonly _serviceBrand: undefined;
 
 	reload(sessionId: string): void;
-	onReload: Event<IReloadSessionEvent>;
+	readonly onReload: Event<IReloadSessionEvent>;
 
 	close(sessionId: string): void;
-	onClose: Event<ICloseSessionEvent>;
+	readonly onClose: Event<ICloseSessionEvent>;
 
 	attachSession(sessionId: string, port: number, subId?: string): void;
-	onAttachSession: Event<IAttachSessionEvent>;
-
-	logToSession(sessionId: string, log: IRemoteConsoleLog): void;
-	onLogToSession: Event<ILogToSessionEvent>;
+	readonly onAttachSession: Event<IAttachSessionEvent>;
 
 	terminateSession(sessionId: string, subId?: string): void;
-	onTerminateSession: Event<ITerminateSessionEvent>;
+	readonly onTerminateSession: Event<ITerminateSessionEvent>;
+
+	openExtensionDevelopmentHostWindow(args: string[], env: IProcessEnvironment, debugRenderer: boolean): Promise<IOpenExtensionWindowResult>;
 }

@@ -39,7 +39,7 @@
 					],
 					"default": null,
 					"description": "%configuration.validate.executablePath%",
-					"scope": "machine"
+					"scope": "machine-overridable"
 				},
 				"php.validate.run": {
 					"type": "string",
@@ -82,6 +82,6 @@
 		"vscode-nls": "^4.0.0"
 	},
 	"devDependencies": {
-		"@types/node": "^10.14.8"
+		"@types/node": "^12.19.9"
 	}
 }

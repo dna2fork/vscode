@@ -4,20 +4,16 @@
  *--------------------------------------------------------------------------------------------*/
 'use strict';
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.minifyTask = exports.optimizeTask = exports.loaderConfig = void 0;
 const es = require("event-stream");
 const gulp = require("gulp");
 const concat = require("gulp-concat");
-const minifyCSS = require("gulp-cssnano");
 const filter = require("gulp-filter");
 const flatmap = require("gulp-flatmap");
-const sourcemaps = require("gulp-sourcemaps");
-const uglify = require("gulp-uglify");
-const composer = require("gulp-uglify/composer");
 const fancyLog = require("fancy-log");
 const ansiColors = require("ansi-colors");
 const path = require("path");
 const pump = require("pump");
-const uglifyes = require("uglify-es");
 const VinylFile = require("vinyl");
 const bundle = require("./bundle");
 const i18n_1 = require("./i18n");
@@ -27,13 +23,13 @@ const REPO_ROOT_PATH = path.join(__dirname, '../..');
 function log(prefix, message) {
     fancyLog(ansiColors.cyan('[' + prefix + ']'), message);
 }
-function loaderConfig(emptyPaths) {
+function loaderConfig() {
     const result = {
         paths: {
             'vs': 'out-build/vs',
             'vscode': 'empty:'
         },
-        nodeModules: emptyPaths || []
+        amdModulesPattern: /^vs\//
     };
     result['vs/css'] = { inlineResources: true };
     return result;
@@ -58,7 +54,7 @@ function loader(src, bundledFileHeader, bundleLoader) {
             isFirst = false;
             this.emit('data', new VinylFile({
                 path: 'fake',
-                base: '',
+                base: '.',
                 contents: Buffer.from(bundledFileHeader)
             }));
             this.emit('data', data);
@@ -67,14 +63,9 @@ function loader(src, bundledFileHeader, bundleLoader) {
             this.emit('data', data);
         }
     }))
-        .pipe(util.loadSourcemaps())
-        .pipe(concat('vs/loader.js'))
-        .pipe(es.mapSync(function (f) {
-        f.sourceMap.sourceRoot = util.toFileUri(path.join(REPO_ROOT_PATH, 'src'));
-        return f;
-    })));
+        .pipe(concat('vs/loader.js')));
 }
-function toConcatStream(src, bundledFileHeader, sources, dest) {
+function toConcatStream(src, bundledFileHeader, sources, dest, fileContentMapper) {
     const useSourcemaps = /\.js$/.test(dest) && !/\.nls\.js$/.test(dest);
     // If a bundle ends up including in any of the sources our copyright, then
     // insert a fake source at the beginning of each bundle with our copyright
@@ -94,11 +85,13 @@ function toConcatStream(src, bundledFileHeader, sources, dest) {
     }
     const treatedSources = sources.map(function (source) {
         const root = source.path ? REPO_ROOT_PATH.replace(/\\/g, '/') : '';
-        const base = source.path ? root + `/${src}` : '';
+        const base = source.path ? root + `/${src}` : '.';
+        const path = source.path ? root + '/' + source.path.replace(/\\/g, '/') : 'fake';
+        const contents = source.path ? fileContentMapper(source.contents, path) : source.contents;
         return new VinylFile({
-            path: source.path ? root + '/' + source.path.replace(/\\/g, '/') : 'fake',
+            path: path,
             base: base,
-            contents: Buffer.from(source.contents)
+            contents: Buffer.from(contents)
         });
     });
     return es.readArray(treatedSources)
@@ -106,9 +99,9 @@ function toConcatStream(src, bundledFileHeader, sources, dest) {
         .pipe(concat(dest))
         .pipe(stats_1.createStatsStream(dest));
 }
-function toBundleStream(src, bundledFileHeader, bundles) {
+function toBundleStream(src, bundledFileHeader, bundles, fileContentMapper) {
     return es.merge(bundles.map(function (bundle) {
-        return toConcatStream(src, bundledFileHeader, bundle.sources, bundle.dest);
+        return toConcatStream(src, bundledFileHeader, bundle.sources, bundle.dest, fileContentMapper);
     }));
 }
 const DEFAULT_FILE_HEADER = [
@@ -124,7 +117,9 @@ function optimizeTask(opts) {
     const bundledFileHeader = opts.header || DEFAULT_FILE_HEADER;
     const bundleLoader = (typeof opts.bundleLoader === 'undefined' ? true : opts.bundleLoader);
     const out = opts.out;
+    const fileContentMapper = opts.fileContentMapper || ((contents, _path) => contents);
     return function () {
+        const sourcemaps = require('gulp-sourcemaps');
         const bundlesStream = es.through(); // this stream will contain the bundled files
         const resourcesStream = es.through(); // this stream will contain the resources
         const bundleInfoStream = es.through(); // this stream will contain bundleInfo.json
@@ -132,7 +127,7 @@ function optimizeTask(opts) {
             if (err || !result) {
                 return bundlesStream.emit('error', JSON.stringify(err));
             }
-            toBundleStream(src, bundledFileHeader, result.files).pipe(bundlesStream);
+            toBundleStream(src, bundledFileHeader, result.files, fileContentMapper).pipe(bundlesStream);
             // Remove css inlined resources
             const filteredResources = resources.slice();
             result.cssInlinedResources.forEach(function (resource) {
@@ -172,6 +167,8 @@ exports.optimizeTask = optimizeTask;
  * to have a file "context" to include our copyright only once per file.
  */
 function uglifyWithCopyrights() {
+    const composer = require('gulp-uglify/composer');
+    const terser = require('terser');
     const preserveComments = (f) => {
         return (_node, comment) => {
             const text = comment.value;
@@ -197,7 +194,7 @@ function uglifyWithCopyrights() {
             return false;
         };
     };
-    const minify = composer(uglifyes);
+    const minify = composer(terser);
     const input = es.through();
     const output = input
         .pipe(flatmap((stream, f) => {
@@ -213,6 +210,9 @@ function uglifyWithCopyrights() {
 function minifyTask(src, sourceMapBaseUrl) {
     const sourceMappingURL = sourceMapBaseUrl ? ((f) => `${sourceMapBaseUrl}/${f.relative}.map`) : undefined;
     return cb => {
+        const minifyCSS = require('gulp-cssnano');
+        const uglify = require('gulp-uglify');
+        const sourcemaps = require('gulp-sourcemaps');
         const jsFilter = filter('**/*.js', { restore: true });
         const cssFilter = filter('**/*.css', { restore: true });
         pump(gulp.src([src + '/**', '!' + src + '/**/*.map']), jsFilter, sourcemaps.init({ loadMaps: true }), uglifyWithCopyrights(), jsFilter.restore, cssFilter, minifyCSS({ reduceIdents: false }), cssFilter.restore, sourcemaps.mapSources((sourcePath) => {

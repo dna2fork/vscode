@@ -4,14 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from 'vs/base/common/lifecycle';
-import { ExtHostContext, MainThreadTreeViewsShape, ExtHostTreeViewsShape, MainContext, IExtHostContext } from '../common/extHost.protocol';
-import { ITreeViewDataProvider, ITreeItem, IViewsService, ITreeView, IViewsRegistry, ITreeViewDescriptor, IRevealOptions, Extensions } from 'vs/workbench/common/views';
+import { ExtHostContext, MainThreadTreeViewsShape, ExtHostTreeViewsShape, MainContext, IExtHostContext } from 'vs/workbench/api/common/extHost.protocol';
+import { ITreeViewDataProvider, ITreeItem, IViewsService, ITreeView, IViewsRegistry, ITreeViewDescriptor, IRevealOptions, Extensions, ResolvableTreeItem } from 'vs/workbench/common/views';
 import { extHostNamedCustomer } from 'vs/workbench/api/common/extHostCustomers';
 import { distinct } from 'vs/base/common/arrays';
 import { INotificationService } from 'vs/platform/notification/common/notification';
 import { isUndefinedOrNull, isNumber } from 'vs/base/common/types';
-import { IMarkdownString } from 'vs/base/common/htmlContent';
 import { Registry } from 'vs/platform/registry/common/platform';
+import { IExtensionService } from 'vs/workbench/services/extensions/common/extensions';
+import { ILogService } from 'vs/platform/log/common/log';
 
 @extHostNamedCustomer(MainContext.MainThreadTreeViews)
 export class MainThreadTreeViews extends Disposable implements MainThreadTreeViewsShape {
@@ -22,38 +23,51 @@ export class MainThreadTreeViews extends Disposable implements MainThreadTreeVie
 	constructor(
 		extHostContext: IExtHostContext,
 		@IViewsService private readonly viewsService: IViewsService,
-		@INotificationService private readonly notificationService: INotificationService
+		@INotificationService private readonly notificationService: INotificationService,
+		@IExtensionService private readonly extensionService: IExtensionService,
+		@ILogService private readonly logService: ILogService
 	) {
 		super();
 		this._proxy = extHostContext.getProxy(ExtHostContext.ExtHostTreeViews);
 	}
 
-	$registerTreeViewDataProvider(treeViewId: string, options: { showCollapseAll: boolean }): void {
-		const dataProvider = new TreeViewDataProvider(treeViewId, this._proxy, this.notificationService);
-		this._dataProviders.set(treeViewId, dataProvider);
-		const viewer = this.getTreeView(treeViewId);
-		if (viewer) {
-			viewer.dataProvider = dataProvider;
-			viewer.showCollapseAllAction = !!options.showCollapseAll;
-			this.registerListeners(treeViewId, viewer);
-			this._proxy.$setVisible(treeViewId, viewer.visible);
-		} else {
-			this.notificationService.error('No view is registered with id: ' + treeViewId);
-		}
+	$registerTreeViewDataProvider(treeViewId: string, options: { showCollapseAll: boolean, canSelectMany: boolean }): void {
+		this.logService.trace('MainThreadTreeViews#$registerTreeViewDataProvider', treeViewId, options);
+
+		this.extensionService.whenInstalledExtensionsRegistered().then(() => {
+			const dataProvider = new TreeViewDataProvider(treeViewId, this._proxy, this.notificationService);
+			this._dataProviders.set(treeViewId, dataProvider);
+			const viewer = this.getTreeView(treeViewId);
+			if (viewer) {
+				// Order is important here. The internal tree isn't created until the dataProvider is set.
+				// Set all other properties first!
+				viewer.showCollapseAllAction = !!options.showCollapseAll;
+				viewer.canSelectMany = !!options.canSelectMany;
+				viewer.dataProvider = dataProvider;
+				this.registerListeners(treeViewId, viewer);
+				this._proxy.$setVisible(treeViewId, viewer.visible);
+			} else {
+				this.notificationService.error('No view is registered with id: ' + treeViewId);
+			}
+		});
 	}
 
-	$reveal(treeViewId: string, item: ITreeItem, parentChain: ITreeItem[], options: IRevealOptions): Promise<void> {
+	$reveal(treeViewId: string, itemInfo: { item: ITreeItem, parentChain: ITreeItem[] } | undefined, options: IRevealOptions): Promise<void> {
+		this.logService.trace('MainThreadTreeViews#$reveal', treeViewId, itemInfo?.item, itemInfo?.parentChain, options);
+
 		return this.viewsService.openView(treeViewId, options.focus)
 			.then(() => {
 				const viewer = this.getTreeView(treeViewId);
-				if (viewer) {
-					return this.reveal(viewer, this._dataProviders.get(treeViewId)!, item, parentChain, options);
+				if (viewer && itemInfo) {
+					return this.reveal(viewer, this._dataProviders.get(treeViewId)!, itemInfo.item, itemInfo.parentChain, options);
 				}
 				return undefined;
 			});
 	}
 
 	$refresh(treeViewId: string, itemsToRefreshByHandle: { [treeItemHandle: string]: ITreeItem }): Promise<void> {
+		this.logService.trace('MainThreadTreeViews#$refresh', treeViewId, itemsToRefreshByHandle);
+
 		const viewer = this.getTreeView(treeViewId);
 		const dataProvider = this._dataProviders.get(treeViewId);
 		if (viewer && dataProvider) {
@@ -63,10 +77,22 @@ export class MainThreadTreeViews extends Disposable implements MainThreadTreeVie
 		return Promise.resolve();
 	}
 
-	$setMessage(treeViewId: string, message: string | IMarkdownString): void {
+	$setMessage(treeViewId: string, message: string): void {
+		this.logService.trace('MainThreadTreeViews#$setMessage', treeViewId, message);
+
 		const viewer = this.getTreeView(treeViewId);
 		if (viewer) {
 			viewer.message = message;
+		}
+	}
+
+	$setTitle(treeViewId: string, title: string, description: string | undefined): void {
+		this.logService.trace('MainThreadTreeViews#$setTitle', treeViewId, title, description);
+
+		const viewer = this.getTreeView(treeViewId);
+		if (viewer) {
+			viewer.title = title;
+			viewer.description = description;
 		}
 	}
 
@@ -125,7 +151,7 @@ export class MainThreadTreeViews extends Disposable implements MainThreadTreeVie
 		this._dataProviders.forEach((dataProvider, treeViewId) => {
 			const treeView = this.getTreeView(treeViewId);
 			if (treeView) {
-				treeView.dataProvider = null;
+				treeView.dataProvider = undefined;
 			}
 		});
 		this._dataProviders.clear();
@@ -138,11 +164,13 @@ type TreeItemHandle = string;
 class TreeViewDataProvider implements ITreeViewDataProvider {
 
 	private readonly itemsMap: Map<TreeItemHandle, ITreeItem> = new Map<TreeItemHandle, ITreeItem>();
+	private hasResolve: Promise<boolean>;
 
 	constructor(private readonly treeViewId: string,
 		private readonly _proxy: ExtHostTreeViewsShape,
 		private readonly notificationService: INotificationService
 	) {
+		this.hasResolve = this._proxy.$hasResolve(this.treeViewId);
 	}
 
 	getChildren(treeItem?: ITreeItem): Promise<ITreeItem[]> {
@@ -189,12 +217,16 @@ class TreeViewDataProvider implements ITreeViewDataProvider {
 		return this.itemsMap.size === 0;
 	}
 
-	private postGetChildren(elements: ITreeItem[]): ITreeItem[] {
-		const result: ITreeItem[] = [];
+	private async postGetChildren(elements: ITreeItem[]): Promise<ResolvableTreeItem[]> {
+		const result: ResolvableTreeItem[] = [];
+		const hasResolve = await this.hasResolve;
 		if (elements) {
 			for (const element of elements) {
-				this.itemsMap.set(element.handle, element);
-				result.push(element);
+				const resolvable = new ResolvableTreeItem(element, hasResolve ? (token) => {
+					return this._proxy.$resolve(this.treeViewId, element.handle, token);
+				} : undefined);
+				this.itemsMap.set(element.handle, resolvable);
+				result.push(resolvable);
 			}
 		}
 		return result;
@@ -203,9 +235,13 @@ class TreeViewDataProvider implements ITreeViewDataProvider {
 	private updateTreeItem(current: ITreeItem, treeItem: ITreeItem): void {
 		treeItem.children = treeItem.children ? treeItem.children : undefined;
 		if (current) {
-			const properties = distinct([...Object.keys(current), ...Object.keys(treeItem)]);
+			const properties = distinct([...Object.keys(current instanceof ResolvableTreeItem ? current.asTreeItem() : current),
+			...Object.keys(treeItem)]);
 			for (const property of properties) {
 				(<any>current)[property] = (<any>treeItem)[property];
+			}
+			if (current instanceof ResolvableTreeItem) {
+				current.resetResolve();
 			}
 		}
 	}

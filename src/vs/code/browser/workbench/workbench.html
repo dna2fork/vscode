@@ -2,37 +2,61 @@
 <!DOCTYPE html>
 <html>
 	<head>
+		<script>
+			performance.mark('code/didStartRenderer')
+		</script>
 		<meta charset="utf-8" />
-
-		<link rel="icon" href="/favicon.ico" type="image/x-icon" />
 
 		<!-- Disable pinch zooming -->
 		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
 
-		<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; img-src 'self' https: data: blob: vscode-remote:; media-src 'none'; child-src 'self' {{WEBVIEW_ENDPOINT}}; script-src 'self' https://az416426.vo.msecnd.net 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: https:; font-src 'self' blob: vscode-remote:;">
+		<!-- Workbench Configuration -->
+		<meta id="vscode-workbench-web-configuration" data-settings="{{WORKBENCH_WEB_CONFIGURATION}}">
 
-		<meta id="vscode-workbench-web-configuration" data-settings="{{WORKBENCH_WEB_CONGIGURATION}}">
+		<!-- Workbench Auth Session -->
+		<meta id="vscode-workbench-auth-session" data-settings="{{WORKBENCH_AUTH_SESSION}}">
 
-		<!-- Workaround to pass remote user data uri-->
-		<meta id="vscode-remote-user-data-uri" data-settings="{{REMOTE_USER_DATA_URI}}">
+		<!-- Workbench Icon/Manifest/CSS -->
+		<link rel="icon" href="/favicon.ico" type="image/x-icon" />
+		<link rel="manifest" href="/manifest.json">
+		<link data-name="vs/workbench/workbench.web.api" rel="stylesheet" href="./static/out/vs/workbench/workbench.web.api.css">
 
-		<!-- Workaround to pass product configuration-->
-		<meta id="vscode-remote-product-configuration" data-settings="{{PRODUCT_CONFIGURATION}}">
-
-		<!-- Workaround to pass remote connection token-->
-		<meta id="vscode-remote-connection-token" data-settings="{{CONNECTION_AUTH_TOKEN}}">
 	</head>
 
 	<body aria-label="">
 	</body>
 
-	<!-- Application insights telemetry library -->
-	<script src="https://az416426.vo.msecnd.net/scripts/a/ai.0.js"></script>
-
-	<!-- Require our AMD loader -->
-	<script src="./out/vs/loader.js"></script>
-
-	<!-- Startup via workbench.js -->
-	<script src="./out/vs/code/browser/workbench/workbench.js"></script>
+	<!-- Startup (do not modify order of script tags!) -->
+	<script>
+		self.require = {
+			baseUrl: `${window.location.origin}/static/out`,
+			recordStats: true,
+			trustedTypesPolicy: window.trustedTypes?.createPolicy('amdLoader', {
+				createScriptURL(value) {
+					if(value.startsWith(window.location.origin)) {
+						return value;
+					}
+					throw new Error(`Invalid script url: ${value}`)
+				}
+			}),
+			paths: {
+				'vscode-textmate': `${window.location.origin}/static/node_modules/vscode-textmate/release/main`,
+				'vscode-oniguruma': `${window.location.origin}/static/node_modules/vscode-oniguruma/release/main`,
+				'xterm': `${window.location.origin}/static/node_modules/xterm/lib/xterm.js`,
+				'xterm-addon-search': `${window.location.origin}/static/node_modules/xterm-addon-search/lib/xterm-addon-search.js`,
+				'xterm-addon-unicode11': `${window.location.origin}/static/node_modules/xterm-addon-unicode11/lib/xterm-addon-unicode11.js`,
+				'xterm-addon-webgl': `${window.location.origin}/static/node_modules/xterm-addon-webgl/lib/xterm-addon-webgl.js`,
+				'tas-client-umd': `${window.location.origin}/static/node_modules/tas-client-umd/lib/tas-client-umd.js`,
+				'iconv-lite-umd': `${window.location.origin}/static/node_modules/iconv-lite-umd/lib/iconv-lite-umd.js`,
+				'jschardet': `${window.location.origin}/static/node_modules/jschardet/dist/jschardet.min.js`,
+			}
+		};
+	</script>
+	<script src="./static/out/vs/loader.js"></script>
+	<script>
+		performance.mark('code/willLoadWorkbenchMain');
+	</script>
+	<script src="./static/out/vs/workbench/workbench.web.api.nls.js"></script>
+	<script src="./static/out/vs/workbench/workbench.web.api.js"></script>
+	<script src="./static/out/vs/code/browser/workbench/workbench.js"></script>
 </html>

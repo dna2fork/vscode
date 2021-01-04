@@ -8,7 +8,7 @@ import { FastDomNode, createFastDomNode } from 'vs/base/browser/fastDomNode';
 import { IntervalTimer, TimeoutTimer } from 'vs/base/common/async';
 import { ViewPart } from 'vs/editor/browser/view/viewPart';
 import { IViewCursorRenderData, ViewCursor } from 'vs/editor/browser/viewParts/viewCursors/viewCursor';
-import { TextEditorCursorBlinkingStyle, TextEditorCursorStyle } from 'vs/editor/common/config/editorOptions';
+import { TextEditorCursorBlinkingStyle, TextEditorCursorStyle, EditorOption } from 'vs/editor/common/config/editorOptions';
 import { Position } from 'vs/editor/common/core/position';
 import { editorCursorBackground, editorCursorForeground } from 'vs/editor/common/view/editorColorRegistry';
 import { RenderingContext, RestrictedRenderingContext } from 'vs/editor/common/view/renderingContext';
@@ -18,13 +18,14 @@ import { registerThemingParticipant } from 'vs/platform/theme/common/themeServic
 
 export class ViewCursors extends ViewPart {
 
-	static BLINK_INTERVAL = 500;
+	static readonly BLINK_INTERVAL = 500;
 
 	private _readOnly: boolean;
 	private _cursorBlinking: TextEditorCursorBlinkingStyle;
 	private _cursorStyle: TextEditorCursorStyle;
 	private _cursorSmoothCaretAnimation: boolean;
 	private _selectionIsEmpty: boolean;
+	private _isComposingInput: boolean;
 
 	private _isVisible: boolean;
 
@@ -43,11 +44,15 @@ export class ViewCursors extends ViewPart {
 	constructor(context: ViewContext) {
 		super(context);
 
-		this._readOnly = this._context.configuration.editor.readOnly;
-		this._cursorBlinking = this._context.configuration.editor.viewInfo.cursorBlinking;
-		this._cursorStyle = this._context.configuration.editor.viewInfo.cursorStyle;
-		this._cursorSmoothCaretAnimation = this._context.configuration.editor.viewInfo.cursorSmoothCaretAnimation;
+		const options = this._context.configuration.options;
+		this._readOnly = options.get(EditorOption.readOnly);
+		this._cursorBlinking = options.get(EditorOption.cursorBlinking);
+		this._cursorStyle = options.get(EditorOption.cursorStyle);
+		this._cursorSmoothCaretAnimation = options.get(EditorOption.cursorSmoothCaretAnimation);
 		this._selectionIsEmpty = true;
+		this._isComposingInput = false;
+
+		this._isVisible = false;
 
 		this._primaryCursor = new ViewCursor(this._context);
 		this._secondaryCursors = [];
@@ -80,23 +85,28 @@ export class ViewCursors extends ViewPart {
 	}
 
 	// --- begin event handlers
-
+	public onCompositionStart(e: viewEvents.ViewCompositionStartEvent): boolean {
+		this._isComposingInput = true;
+		this._updateBlinking();
+		return true;
+	}
+	public onCompositionEnd(e: viewEvents.ViewCompositionEndEvent): boolean {
+		this._isComposingInput = false;
+		this._updateBlinking();
+		return true;
+	}
 	public onConfigurationChanged(e: viewEvents.ViewConfigurationChangedEvent): boolean {
+		const options = this._context.configuration.options;
 
-		if (e.readOnly) {
-			this._readOnly = this._context.configuration.editor.readOnly;
-		}
-		if (e.viewInfo) {
-			this._cursorBlinking = this._context.configuration.editor.viewInfo.cursorBlinking;
-			this._cursorStyle = this._context.configuration.editor.viewInfo.cursorStyle;
-			this._cursorSmoothCaretAnimation = this._context.configuration.editor.viewInfo.cursorSmoothCaretAnimation;
-		}
+		this._readOnly = options.get(EditorOption.readOnly);
+		this._cursorBlinking = options.get(EditorOption.cursorBlinking);
+		this._cursorStyle = options.get(EditorOption.cursorStyle);
+		this._cursorSmoothCaretAnimation = options.get(EditorOption.cursorSmoothCaretAnimation);
+
+		this._updateBlinking();
+		this._updateDomClassName();
 
 		this._primaryCursor.onConfigurationChanged(e);
-		this._updateBlinking();
-		if (e.viewInfo) {
-			this._updateDomClassName();
-		}
 		for (let i = 0, len = this._secondaryCursors.length; i < len; i++) {
 			this._secondaryCursors[i].onConfigurationChanged(e);
 		}
@@ -196,6 +206,10 @@ export class ViewCursors extends ViewPart {
 	// ---- blinking logic
 
 	private _getCursorBlinking(): TextEditorCursorBlinkingStyle {
+		if (this._isComposingInput) {
+			// avoid double cursors
+			return TextEditorCursorBlinkingStyle.Hidden;
+		}
 		if (!this._editorHasFocus) {
 			return TextEditorCursorBlinkingStyle.Hidden;
 		}
@@ -359,7 +373,7 @@ registerThemingParticipant((theme, collector) => {
 		if (!caretBackground) {
 			caretBackground = caret.opposite();
 		}
-		collector.addRule(`.monaco-editor .cursor { background-color: ${caret}; border-color: ${caret}; color: ${caretBackground}; }`);
+		collector.addRule(`.monaco-editor .cursors-layer .cursor { background-color: ${caret}; border-color: ${caret}; color: ${caretBackground}; }`);
 		if (theme.type === 'hc') {
 			collector.addRule(`.monaco-editor .cursors-layer.has-selection .cursor { border-left: 1px solid ${caretBackground}; border-right: 1px solid ${caretBackground}; }`);
 		}

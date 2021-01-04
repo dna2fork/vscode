@@ -7,12 +7,13 @@ import { LinkDetector } from 'vs/workbench/contrib/debug/browser/linkDetector';
 import { RGBA, Color } from 'vs/base/common/color';
 import { IThemeService } from 'vs/platform/theme/common/themeService';
 import { ansiColorIdentifiers } from 'vs/workbench/contrib/terminal/common/terminalColorRegistry';
+import { IWorkspaceFolder } from 'vs/platform/workspace/common/workspace';
 
 /**
  * @param text The content to stylize.
  * @returns An {@link HTMLSpanElement} that contains the potentially stylized text.
  */
-export function handleANSIOutput(text: string, linkDetector: LinkDetector, themeService: IThemeService): HTMLSpanElement {
+export function handleANSIOutput(text: string, linkDetector: LinkDetector, themeService: IThemeService, workspaceFolder: IWorkspaceFolder | undefined): HTMLSpanElement {
 
 	const root: HTMLSpanElement = document.createElement('span');
 	const textLength: number = text.length;
@@ -53,7 +54,7 @@ export function handleANSIOutput(text: string, linkDetector: LinkDetector, theme
 			if (sequenceFound) {
 
 				// Flush buffer with previous styles.
-				appendStylizedStringToContainer(root, buffer, styleNames, linkDetector, customFgColor, customBgColor);
+				appendStylizedStringToContainer(root, buffer, styleNames, linkDetector, workspaceFolder, customFgColor, customBgColor);
 
 				buffer = '';
 
@@ -99,7 +100,7 @@ export function handleANSIOutput(text: string, linkDetector: LinkDetector, theme
 
 	// Flush remaining text buffer if not empty.
 	if (buffer) {
-		appendStylizedStringToContainer(root, buffer, styleNames, linkDetector, customFgColor, customBgColor);
+		appendStylizedStringToContainer(root, buffer, styleNames, linkDetector, workspaceFolder, customFgColor, customBgColor);
 	}
 
 	return root;
@@ -226,7 +227,7 @@ export function handleANSIOutput(text: string, linkDetector: LinkDetector, theme
 	 * nothing.
 	 */
 	function setBasicColor(styleCode: number): void {
-		const theme = themeService.getTheme();
+		const theme = themeService.getColorTheme();
 		let colorType: 'foreground' | 'background' | undefined;
 		let colorIndex: number | undefined;
 
@@ -267,6 +268,7 @@ export function appendStylizedStringToContainer(
 	stringContent: string,
 	cssClasses: string[],
 	linkDetector: LinkDetector,
+	workspaceFolder: IWorkspaceFolder | undefined,
 	customTextColor?: RGBA,
 	customBackgroundColor?: RGBA
 ): void {
@@ -274,7 +276,7 @@ export function appendStylizedStringToContainer(
 		return;
 	}
 
-	const container = linkDetector.handleLinks(stringContent);
+	const container = linkDetector.linkify(stringContent, true, workspaceFolder);
 
 	container.className = cssClasses.join(' ');
 	if (customTextColor) {

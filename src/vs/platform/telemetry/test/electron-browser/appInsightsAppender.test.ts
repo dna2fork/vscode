@@ -4,15 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 import * as assert from 'assert';
 import { AppInsightsAppender } from 'vs/platform/telemetry/node/appInsightsAppender';
-import { ILogService, AbstractLogService, LogLevel, DEFAULT_LOG_LEVEL } from 'vs/platform/log/common/log';
-import { ITelemetryClient, EventTelemetry } from 'applicationinsights';
+import { TelemetryClient, Contracts } from 'applicationinsights';
 
-class AppInsightsMock implements ITelemetryClient {
+class AppInsightsMock extends TelemetryClient {
 	public config: any;
 	public channel: any;
-	public events: EventTelemetry[] = [];
+	public events: Contracts.EventTelemetry[] = [];
 	public IsTrackingPageView: boolean = false;
 	public exceptions: any[] = [];
+
+	constructor() {
+		super('testKey');
+	}
 
 	public trackEvent(event: any) {
 		this.events.push(event);
@@ -21,55 +24,6 @@ class AppInsightsMock implements ITelemetryClient {
 	public flush(options: any): void {
 		// called on dispose
 	}
-}
-
-class TestableLogService extends AbstractLogService implements ILogService {
-	_serviceBrand: any;
-
-	public logs: string[] = [];
-
-	constructor(logLevel: LogLevel = DEFAULT_LOG_LEVEL) {
-		super();
-		this.setLevel(logLevel);
-	}
-
-	trace(message: string, ...args: any[]): void {
-		if (this.getLevel() <= LogLevel.Trace) {
-			this.logs.push(message + JSON.stringify(args));
-		}
-	}
-
-	debug(message: string, ...args: any[]): void {
-		if (this.getLevel() <= LogLevel.Debug) {
-			this.logs.push(message);
-		}
-	}
-
-	info(message: string, ...args: any[]): void {
-		if (this.getLevel() <= LogLevel.Info) {
-			this.logs.push(message);
-		}
-	}
-
-	warn(message: string | Error, ...args: any[]): void {
-		if (this.getLevel() <= LogLevel.Warning) {
-			this.logs.push(message.toString());
-		}
-	}
-
-	error(message: string, ...args: any[]): void {
-		if (this.getLevel() <= LogLevel.Error) {
-			this.logs.push(message);
-		}
-	}
-
-	critical(message: string, ...args: any[]): void {
-		if (this.getLevel() <= LogLevel.Critical) {
-			this.logs.push(message);
-		}
-	}
-
-	dispose(): void { }
 }
 
 suite('AIAdapter', () => {
@@ -84,7 +38,7 @@ suite('AIAdapter', () => {
 	});
 
 	teardown(() => {
-		adapter.dispose();
+		adapter.flush();
 	});
 
 	test('Simple event', () => {
@@ -176,26 +130,4 @@ suite('AIAdapter', () => {
 		assert.equal(appInsightsMock.events[0].measurements!['nestedObj.testMeasurement'], 1);
 	});
 
-	test('Do not Log Telemetry if log level is not trace', () => {
-		const logService = new TestableLogService(LogLevel.Info);
-		adapter = new AppInsightsAppender(prefix, { 'common.platform': 'Windows' }, () => appInsightsMock, logService);
-		adapter.log('testEvent', { hello: 'world', isTrue: true, numberBetween1And3: 2 });
-		assert.equal(logService.logs.length, 0);
-	});
-
-	test('Log Telemetry if log level is trace', () => {
-		const logService = new TestableLogService(LogLevel.Trace);
-		adapter = new AppInsightsAppender(prefix, { 'common.platform': 'Windows' }, () => appInsightsMock, logService);
-		adapter.log('testEvent', { hello: 'world', isTrue: true, numberBetween1And3: 2 });
-		assert.equal(logService.logs.length, 1);
-		assert.equal(logService.logs[0], 'telemetry/testEvent' + JSON.stringify([{
-			properties: {
-				hello: 'world',
-				'common.platform': 'Windows'
-			},
-			measurements: {
-				isTrue: 1, numberBetween1And3: 2
-			}
-		}]));
-	});
 });

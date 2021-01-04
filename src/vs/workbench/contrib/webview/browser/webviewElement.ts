@@ -3,146 +3,107 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter } from 'vs/base/common/event';
+import { addDisposableListener } from 'vs/base/browser/dom';
+import { streamToBuffer } from 'vs/base/common/buffer';
+import { IDisposable } from 'vs/base/common/lifecycle';
+import { Schemas } from 'vs/base/common/network';
 import { URI } from 'vs/base/common/uri';
-import { Webview, WebviewContentOptions, WebviewOptions } from 'vs/workbench/contrib/webview/common/webview';
-import { IThemeService, ITheme } from 'vs/platform/theme/common/themeService';
-import { IEnvironmentService } from 'vs/platform/environment/common/environment';
-import { IFileService } from 'vs/platform/files/common/files';
-import { Disposable } from 'vs/base/common/lifecycle';
-import { areWebviewInputOptionsEqual } from 'vs/workbench/contrib/webview/browser/webviewEditorService';
-import { addDisposableListener, addClass } from 'vs/base/browser/dom';
-import { getWebviewThemeData } from 'vs/workbench/contrib/webview/common/themeing';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { loadLocalResource } from 'vs/workbench/contrib/webview/common/resourceLoader';
-import { WebviewPortMappingManager } from 'vs/workbench/contrib/webview/common/portMapping';
+import { IFileService } from 'vs/platform/files/common/files';
+import { ILogService } from 'vs/platform/log/common/log';
+import { INotificationService } from 'vs/platform/notification/common/notification';
+import { IRemoteAuthorityResolverService } from 'vs/platform/remote/common/remoteAuthorityResolver';
 import { ITunnelService } from 'vs/platform/remote/common/tunnel';
+import { IRequestService } from 'vs/platform/request/common/request';
+import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
+import { loadLocalResource, WebviewResourceResponse } from 'vs/platform/webview/common/resourceLoader';
+import { WebviewPortMappingManager } from 'vs/platform/webview/common/webviewPortMapping';
+import { BaseWebview, WebviewMessageChannels } from 'vs/workbench/contrib/webview/browser/baseWebviewElement';
+import { WebviewThemeDataProvider } from 'vs/workbench/contrib/webview/browser/themeing';
+import { Webview, WebviewContentOptions, WebviewExtensionDescription, WebviewOptions } from 'vs/workbench/contrib/webview/browser/webview';
+import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 
-interface WebviewContent {
-	readonly html: string;
-	readonly options: WebviewContentOptions;
-	readonly state: string | undefined;
-}
-
-export class IFrameWebview extends Disposable implements Webview {
-	private element?: HTMLIFrameElement;
-
-	private readonly _ready: Promise<void>;
-
-	private content: WebviewContent;
-	private _focused = false;
-
+export class IFrameWebview extends BaseWebview<HTMLIFrameElement> implements Webview {
 	private readonly _portMappingManager: WebviewPortMappingManager;
+	private _confirmBeforeClose: string;
 
 	constructor(
-		private readonly id: string,
-		private _options: WebviewOptions,
+		id: string,
+		options: WebviewOptions,
 		contentOptions: WebviewContentOptions,
-		@IThemeService themeService: IThemeService,
+		extension: WebviewExtensionDescription | undefined,
+		webviewThemeDataProvider: WebviewThemeDataProvider,
+		@INotificationService notificationService: INotificationService,
 		@ITunnelService tunnelService: ITunnelService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
+		@IRequestService private readonly requestService: IRequestService,
+		@ITelemetryService telemetryService: ITelemetryService,
+		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IRemoteAuthorityResolverService private readonly _remoteAuthorityResolverService: IRemoteAuthorityResolverService,
+		@ILogService private readonly logService: ILogService,
 	) {
-		super();
-		if (typeof environmentService.webviewEndpoint !== 'string') {
-			throw new Error('To use iframe based webviews, you must configure `environmentService.webviewEndpoint`');
-		}
+		super(id, options, contentOptions, extension, webviewThemeDataProvider, notificationService, logService, telemetryService, environmentService);
 
 		this._portMappingManager = this._register(new WebviewPortMappingManager(
-			this._options.extension ? this._options.extension.location : undefined,
-			() => this.content.options.portMappings || [],
+			() => this.extension?.location,
+			() => this.content.options.portMapping || [],
 			tunnelService
 		));
 
-		this.content = {
-			html: '',
-			options: contentOptions,
-			state: undefined
-		};
+		this._register(this.on(WebviewMessageChannels.loadResource, (entry: any) => {
+			const rawPath = entry.path;
+			const normalizedPath = decodeURIComponent(rawPath);
+			const uri = URI.parse(normalizedPath.replace(/^\/([\w\-]+)\/(.+)$/, (_, scheme, path) => scheme + ':/' + path));
+			this.loadResource(rawPath, uri);
+		}));
 
-		this.element = document.createElement('iframe');
-		this.element.sandbox.add('allow-scripts', 'allow-same-origin');
-		this.element.setAttribute('src', `${this.endpoint}/index.html?id=${this.id}`);
-		this.element.style.border = 'none';
-		this.element.style.width = '100%';
-		this.element.style.height = '100%';
+		this._register(this.on(WebviewMessageChannels.loadLocalhost, (entry: any) => {
+			this.localLocalhost(entry.origin);
+		}));
 
-		this._register(addDisposableListener(window, 'message', e => {
-			if (!e || !e.data || e.data.target !== this.id) {
-				return;
-			}
+		this._confirmBeforeClose = this._configurationService.getValue<string>('window.confirmBeforeClose');
 
-			switch (e.data.channel) {
-				case 'onmessage':
-					if (e.data.data) {
-						this._onMessage.fire(e.data.data);
-					}
-					return;
-
-				case 'did-click-link':
-					const uri = e.data.data;
-					this._onDidClickLink.fire(URI.parse(uri));
-					return;
-
-				case 'did-scroll':
-					// if (e.args && typeof e.args[0] === 'number') {
-					// 	this._onDidScroll.fire({ scrollYPercentage: e.args[0] });
-					// }
-					return;
-
-				case 'do-reload':
-					this.reload();
-					return;
-
-				case 'do-update-state':
-					const state = e.data.data;
-					this.state = state;
-					this._onDidUpdateState.fire(state);
-					return;
-
-				case 'did-focus':
-					this.handleFocusChange(true);
-					return;
-
-				case 'did-blur':
-					this.handleFocusChange(false);
-					return;
-
-				case 'load-resource':
-					{
-						const requestPath = e.data.data.path;
-						const uri = URI.file(decodeURIComponent(requestPath));
-						this.loadResource(requestPath, uri);
-						return;
-					}
-
-				case 'load-localhost':
-					{
-						this.localLocalhost(e.data.data.origin);
-						return;
-					}
+		this._register(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('window.confirmBeforeClose')) {
+				this._confirmBeforeClose = this._configurationService.getValue('window.confirmBeforeClose');
+				this._send(WebviewMessageChannels.setConfirmBeforeClose, this._confirmBeforeClose);
 			}
 		}));
 
-		this._ready = new Promise(resolve => {
-			const subscription = this._register(addDisposableListener(window, 'message', (e) => {
-				if (e.data && e.data.target === this.id && e.data.channel === 'webview-ready') {
-					if (this.element) {
-						addClass(this.element, 'ready');
-					}
-					subscription.dispose();
-					resolve();
-				}
-			}));
-		});
-
-		this.style(themeService.getTheme());
-		this._register(themeService.onThemeChange(this.style, this));
+		this.initElement(extension, options);
 	}
 
-	private get endpoint(): string {
-		const endpoint = this.environmentService.webviewEndpoint!.replace('{{uuid}}', this.id);
+	protected createElement(options: WebviewOptions, _contentOptions: WebviewContentOptions) {
+		// Do not start loading the webview yet.
+		// Wait the end of the ctor when all listeners have been hooked up.
+		const element = document.createElement('iframe');
+		element.className = `webview ${options.customClasses || ''}`;
+		element.sandbox.add('allow-scripts', 'allow-same-origin', 'allow-forms', 'allow-pointer-lock', 'allow-downloads');
+		element.style.border = 'none';
+		element.style.width = '100%';
+		element.style.height = '100%';
+		return element;
+	}
+
+	protected initElement(extension: WebviewExtensionDescription | undefined, options: WebviewOptions) {
+		const params = {
+			id: this.id,
+
+			// The extensionId and purpose in the URL are used for filtering in js-debug:
+			extensionId: extension?.id.value ?? '',
+			purpose: options.purpose,
+		} as const;
+
+		const queryString = (Object.keys(params) as Array<keyof typeof params>)
+			.map((key) => `${key}=${params[key]}`)
+			.join('&');
+
+		this.element!.setAttribute('src', `${this.externalEndpoint}/index.html?${queryString}`);
+	}
+
+	private get externalEndpoint(): string {
+		const endpoint = this.environmentService.webviewExternalEndpoint!.replace('{{uuid}}', this.id);
 		if (endpoint[endpoint.length - 1] === '/') {
 			return endpoint.slice(0, endpoint.length - 1);
 		}
@@ -155,104 +116,37 @@ export class IFrameWebview extends Disposable implements Webview {
 		}
 	}
 
-	public set contentOptions(options: WebviewContentOptions) {
-		if (areWebviewInputOptionsEqual(options, this.content.options)) {
-			return;
-		}
-
-		this.content = {
-			html: this.content.html,
-			options: options,
-			state: this.content.state,
-		};
-		this.doUpdateContent();
-	}
-
 	public set html(value: string) {
-		this.content = {
-			html: this.preprocessHtml(value),
-			options: this.content.options,
-			state: this.content.state,
+		super.html = this.preprocessHtml(value);
+	}
+
+	protected preprocessHtml(value: string): string {
+		return value
+			.replace(/(["'])(?:vscode-resource):(\/\/([^\s\/'"]+?)(?=\/))?([^\s'"]+?)(["'])/gi, (match, startQuote, _1, scheme, path, endQuote) => {
+				if (scheme) {
+					return `${startQuote}${this.externalEndpoint}/vscode-resource/${scheme}${path}${endQuote}`;
+				}
+				return `${startQuote}${this.externalEndpoint}/vscode-resource/file${path}${endQuote}`;
+			})
+			.replace(/(["'])(?:vscode-webview-resource):(\/\/[^\s\/'"]+\/([^\s\/'"]+?)(?=\/))?([^\s'"]+?)(["'])/gi, (match, startQuote, _1, scheme, path, endQuote) => {
+				if (scheme) {
+					return `${startQuote}${this.externalEndpoint}/vscode-resource/${scheme}${path}${endQuote}`;
+				}
+				return `${startQuote}${this.externalEndpoint}/vscode-resource/file${path}${endQuote}`;
+			});
+	}
+
+	protected get extraContentOptions(): any {
+		return {
+			endpoint: this.externalEndpoint,
+			confirmBeforeClose: this._confirmBeforeClose,
 		};
-		this.doUpdateContent();
-	}
-
-	private preprocessHtml(value: string): string {
-		return value.replace(/(["'])vscode-resource:([^\s'"]+?)(["'])/gi, (_, startQuote, path, endQuote) =>
-			`${startQuote}${this.endpoint}/vscode-resource${path}${endQuote}`);
-	}
-
-	public update(html: string, options: WebviewContentOptions, retainContextWhenHidden: boolean) {
-		if (retainContextWhenHidden && html === this.content.html && areWebviewInputOptionsEqual(options, this.content.options)) {
-			return;
-		}
-		this.content = {
-			html: this.preprocessHtml(html),
-			options: options,
-			state: this.content.state,
-		};
-		this.doUpdateContent();
-	}
-
-	private doUpdateContent() {
-		this._send('content', {
-			contents: this.content.html,
-			options: this.content.options,
-			state: this.content.state
-		});
-	}
-
-	private handleFocusChange(isFocused: boolean): void {
-		this._focused = isFocused;
-		if (this._focused) {
-			this._onDidFocus.fire();
-		}
-	}
-
-	initialScrollProgress: number;
-
-	private readonly _onDidFocus = this._register(new Emitter<void>());
-	public readonly onDidFocus = this._onDidFocus.event;
-
-	private readonly _onDidClickLink = this._register(new Emitter<URI>());
-	public readonly onDidClickLink = this._onDidClickLink.event;
-
-	private readonly _onDidScroll = this._register(new Emitter<{ scrollYPercentage: number }>());
-	public readonly onDidScroll = this._onDidScroll.event;
-
-	private readonly _onDidUpdateState = this._register(new Emitter<string | undefined>());
-	public readonly onDidUpdateState = this._onDidUpdateState.event;
-
-	private readonly _onMessage = this._register(new Emitter<any>());
-	public readonly onMessage = this._onMessage.event;
-
-	sendMessage(data: any): void {
-		this._send('message', data);
-	}
-
-	layout(): void {
-		// noop
 	}
 
 	focus(): void {
 		if (this.element) {
-			this.element.focus();
+			this._send('focus');
 		}
-	}
-
-	dispose(): void {
-		if (this.element) {
-			if (this.element.parentElement) {
-				this.element.parentElement.removeChild(this.element);
-			}
-		}
-
-		this.element = undefined!;
-		super.dispose();
-	}
-
-	reload(): void {
-		this.doUpdateContent();
 	}
 
 	showFind(): void {
@@ -263,61 +157,86 @@ export class IFrameWebview extends Disposable implements Webview {
 		throw new Error('Method not implemented.');
 	}
 
-	public set state(state: string | undefined) {
-		this.content = {
-			html: this.content.html,
-			options: this.content.options,
-			state,
-		};
-	}
-
-	private _send(channel: string, data: any): void {
-		this._ready
-			.then(() => {
-				if (!this.element) {
-					return;
-				}
-				this.element.contentWindow!.postMessage({
-					channel: channel,
-					args: data
-				}, '*');
-			})
-			.catch(err => console.error(err));
-	}
-
-	private style(theme: ITheme): void {
-		const { styles, activeTheme } = getWebviewThemeData(theme, this._configurationService);
-		this._send('styles', { styles, activeTheme });
+	runFindAction(previous: boolean): void {
+		throw new Error('Method not implemented.');
 	}
 
 	private async loadResource(requestPath: string, uri: URI) {
 		try {
-			const result = await loadLocalResource(uri, this.fileService, this._options.extension ? this._options.extension.location : undefined,
-				() => (this.content.options.localResourceRoots || []));
+			const remoteAuthority = this.environmentService.remoteAuthority;
+			const remoteConnectionData = remoteAuthority ? this._remoteAuthorityResolverService.getConnectionData(remoteAuthority) : null;
+			const extensionLocation = this.extension?.location;
 
-			if (result.type === 'success') {
+			// If we are loading a file resource from a remote extension, rewrite the uri to go remote
+			let rewriteUri: undefined | ((uri: URI) => URI);
+			if (extensionLocation?.scheme === Schemas.vscodeRemote) {
+				rewriteUri = (uri) => {
+					if (uri.scheme === Schemas.file && extensionLocation?.scheme === Schemas.vscodeRemote) {
+						return URI.from({
+							scheme: Schemas.vscodeRemote,
+							authority: extensionLocation.authority,
+							path: '/vscode-resource',
+							query: JSON.stringify({
+								requestResourcePath: uri.path
+							})
+						});
+					}
+					return uri;
+				};
+			}
+
+			const result = await loadLocalResource(uri, {
+				extensionLocation: extensionLocation,
+				roots: this.content.options.localResourceRoots || [],
+				remoteConnectionData,
+				rewriteUri,
+			}, {
+				readFileStream: (resource) => this.fileService.readFileStream(resource).then(x => x.value),
+			}, this.requestService, this.logService);
+
+			if (result.type === WebviewResourceResponse.Type.Success) {
+				const { buffer } = await streamToBuffer(result.stream);
 				return this._send('did-load-resource', {
 					status: 200,
 					path: requestPath,
 					mime: result.mimeType,
-					data: result.data.buffer
+					data: buffer,
 				});
 			}
-		} catch  {
+		} catch {
 			// noop
 		}
 
 		return this._send('did-load-resource', {
 			status: 404,
-			path: uri.path
+			path: requestPath
 		});
 	}
 
 	private async localLocalhost(origin: string) {
-		const redirect = await this._portMappingManager.getRedirect(origin);
+		const authority = this.environmentService.remoteAuthority;
+		const resolveAuthority = authority ? await this._remoteAuthorityResolverService.resolveAuthority(authority) : undefined;
+		const redirect = resolveAuthority ? await this._portMappingManager.getRedirect(resolveAuthority.authority, origin) : undefined;
 		return this._send('did-load-localhost', {
 			origin,
 			location: redirect
+		});
+	}
+
+	protected doPostMessage(channel: string, data?: any): void {
+		if (this.element) {
+			this.element.contentWindow!.postMessage({ channel, args: data }, '*');
+		}
+	}
+
+	protected on<T = unknown>(channel: WebviewMessageChannels, handler: (data: T) => void): IDisposable {
+		return addDisposableListener(window, 'message', e => {
+			if (!e || !e.data || e.data.target !== this.id) {
+				return;
+			}
+			if (e.data.channel === channel) {
+				handler(e.data.data);
+			}
 		});
 	}
 }

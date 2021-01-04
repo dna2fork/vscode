@@ -3,34 +3,26 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Action } from 'vs/base/common/actions';
-import { IWindowService, IWindowsService } from 'vs/platform/windows/common/windows';
 import * as nls from 'vs/nls';
+import { ISharedProcessService } from 'vs/platform/ipc/electron-browser/sharedProcessService';
+import { Action2, registerAction2 } from 'vs/platform/actions/common/actions';
+import { ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
+import { CATEGORIES } from 'vs/workbench/common/actions';
 
-export class ToggleDevToolsAction extends Action {
+class ToggleSharedProcessAction extends Action2 {
 
-	static readonly ID = 'workbench.action.toggleDevTools';
-	static LABEL = nls.localize('toggleDevTools', "Toggle Developer Tools");
-
-	constructor(id: string, label: string, @IWindowService private readonly windowsService: IWindowService) {
-		super(id, label);
+	constructor() {
+		super({
+			id: 'workbench.action.toggleSharedProcess',
+			title: { value: nls.localize('toggleSharedProcess', "Toggle Shared Process"), original: 'Toggle Shared Process' },
+			category: CATEGORIES.Developer,
+			f1: true
+		});
 	}
 
-	run(): Promise<void> {
-		return this.windowsService.toggleDevTools();
-	}
-}
-
-export class ToggleSharedProcessAction extends Action {
-
-	static readonly ID = 'workbench.action.toggleSharedProcess';
-	static LABEL = nls.localize('toggleSharedProcess', "Toggle Shared Process");
-
-	constructor(id: string, label: string, @IWindowsService private readonly windowsService: IWindowsService) {
-		super(id, label);
-	}
-
-	run(): Promise<void> {
-		return this.windowsService.toggleSharedProcess();
+	async run(accessor: ServicesAccessor): Promise<void> {
+		return accessor.get(ISharedProcessService).toggleSharedProcessWindow();
 	}
 }
+
+registerAction2(ToggleSharedProcessAction);

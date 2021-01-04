@@ -3,18 +3,19 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import type * as vscode from 'vscode';
 import { IDisposable } from 'vs/base/common/lifecycle';
-import { IExtensionMemento } from 'vs/workbench/api/common/extHostExtensionActivator';
 import { ExtHostStorage } from 'vs/workbench/api/common/extHostStorage';
+import { IExtensionDescription } from 'vs/platform/extensions/common/extensions';
 
-export class ExtensionMemento implements IExtensionMemento {
+export class ExtensionMemento implements vscode.Memento {
 
-	private readonly _id: string;
+	protected readonly _id: string;
 	private readonly _shared: boolean;
-	private readonly _storage: ExtHostStorage;
+	protected readonly _storage: ExtHostStorage;
 
 	private readonly _init: Promise<ExtensionMemento>;
-	private _value: { [n: string]: any; };
+	private _value?: { [n: string]: any; };
 	private readonly _storageListener: IDisposable;
 
 	constructor(id: string, global: boolean, storage: ExtHostStorage) {
@@ -41,7 +42,7 @@ export class ExtensionMemento implements IExtensionMemento {
 	get<T>(key: string): T | undefined;
 	get<T>(key: string, defaultValue: T): T;
 	get<T>(key: string, defaultValue?: T): T {
-		let value = this._value[key];
+		let value = this._value![key];
 		if (typeof value === 'undefined') {
 			value = defaultValue;
 		}
@@ -49,11 +50,26 @@ export class ExtensionMemento implements IExtensionMemento {
 	}
 
 	update(key: string, value: any): Promise<void> {
-		this._value[key] = value;
-		return this._storage.setValue(this._shared, this._id, this._value);
+		this._value![key] = value;
+		return this._storage.setValue(this._shared, this._id, this._value!);
 	}
 
 	dispose(): void {
 		this._storageListener.dispose();
 	}
+}
+
+export class ExtensionGlobalMemento extends ExtensionMemento {
+
+	private readonly _extension: IExtensionDescription;
+
+	setKeysForSync(keys: string[]): void {
+		this._storage.registerExtensionStorageKeysToSync({ id: this._id, version: this._extension.version }, keys);
+	}
+
+	constructor(extensionDescription: IExtensionDescription, storage: ExtHostStorage) {
+		super(extensionDescription.identifier.value, true, storage);
+		this._extension = extensionDescription;
+	}
+
 }

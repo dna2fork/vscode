@@ -4,8 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { Node, HtmlNode, Rule, Property, Stylesheet } from 'EmmetNode';
-import { getEmmetHelper, getNode, getInnerRange, getMappingForIncludedLanguages, parseDocument, validate, getEmmetConfiguration, isStyleSheet, getEmmetMode, parsePartialStylesheet, isStyleAttribute, getEmbeddedCssNodeIfAny, allowedMimeTypesInScriptTag } from './util';
+import { Node, HtmlNode, Rule, Property, Stylesheet } from 'EmmetFlatNode';
+import { getEmmetHelper, getFlatNode, getMappingForIncludedLanguages, validate, getEmmetConfiguration, isStyleSheet, getEmmetMode, parsePartialStylesheet, isStyleAttribute, getEmbeddedCssNodeIfAny, allowedMimeTypesInScriptTag, toLSTextDocument } from './util';
+import { getRootNode as parseDocument } from './parseDocument';
 
 const trimRegex = /[\u00a0]*[\d#\-\*\u2022]+\.?/;
 const hexColorRegex = /^#[\da-fA-F]{0,6}$/;
@@ -59,43 +60,52 @@ function doWrapping(individualLines: boolean, args: any) {
 		args['language'] = editor.document.languageId;
 	}
 	const syntax = getSyntaxFromArgs(args) || 'html';
-	const rootNode = parseDocument(editor.document, false);
+	const rootNode = parseDocument(editor.document, true);
 
 	let inPreview = false;
 	let currentValue = '';
 	const helper = getEmmetHelper();
 
 	// Fetch general information for the succesive expansions. i.e. the ranges to replace and its contents
-	let rangesToReplace: PreviewRangesWithContent[] = editor.selections.sort((a: vscode.Selection, b: vscode.Selection) => { return a.start.compareTo(b.start); }).map(selection => {
+	const rangesToReplace: PreviewRangesWithContent[] = editor.selections.sort((a: vscode.Selection, b: vscode.Selection) => { return a.start.compareTo(b.start); }).map(selection => {
 		let rangeToReplace: vscode.Range = selection.isReversed ? new vscode.Range(selection.active, selection.anchor) : selection;
+		const document = editor.document;
 		if (!rangeToReplace.isSingleLine && rangeToReplace.end.character === 0) {
 			const previousLine = rangeToReplace.end.line - 1;
-			const lastChar = editor.document.lineAt(previousLine).text.length;
+			const lastChar = document.lineAt(previousLine).text.length;
 			rangeToReplace = new vscode.Range(rangeToReplace.start, new vscode.Position(previousLine, lastChar));
 		} else if (rangeToReplace.isEmpty) {
 			const { active } = selection;
-			const currentNode = getNode(rootNode, active, true);
-			if (currentNode && (currentNode.start.line === active.line || currentNode.end.line === active.line)) {
-				rangeToReplace = new vscode.Range(currentNode.start, currentNode.end);
+			const activeOffset = document.offsetAt(active);
+			const currentNode = getFlatNode(rootNode, activeOffset, true);
+			if (currentNode) {
+				const currentNodeStart = document.positionAt(currentNode.start);
+				const currentNodeEnd = document.positionAt(currentNode.end);
+				if (currentNodeStart.line === active.line || currentNodeEnd.line === active.line) {
+					rangeToReplace = new vscode.Range(currentNodeStart, currentNodeEnd);
+				}
+				else {
+					rangeToReplace = new vscode.Range(rangeToReplace.start.line, 0, rangeToReplace.start.line, document.lineAt(rangeToReplace.start.line).text.length);
+				}
 			} else {
-				rangeToReplace = new vscode.Range(rangeToReplace.start.line, 0, rangeToReplace.start.line, editor.document.lineAt(rangeToReplace.start.line).text.length);
+				rangeToReplace = new vscode.Range(rangeToReplace.start.line, 0, rangeToReplace.start.line, document.lineAt(rangeToReplace.start.line).text.length);
 			}
 		}
 
-		const firstLineOfSelection = editor.document.lineAt(rangeToReplace.start).text.substr(rangeToReplace.start.character);
+		const firstLineOfSelection = document.lineAt(rangeToReplace.start).text.substr(rangeToReplace.start.character);
 		const matches = firstLineOfSelection.match(/^(\s*)/);
-		const extraWhiteSpaceSelected = matches ? matches[1].length : 0;
-		rangeToReplace = new vscode.Range(rangeToReplace.start.line, rangeToReplace.start.character + extraWhiteSpaceSelected, rangeToReplace.end.line, rangeToReplace.end.character);
+		const extraWhitespaceSelected = matches ? matches[1].length : 0;
+		rangeToReplace = new vscode.Range(rangeToReplace.start.line, rangeToReplace.start.character + extraWhitespaceSelected, rangeToReplace.end.line, rangeToReplace.end.character);
 
 		let textToWrapInPreview: string[];
-		let textToReplace = editor.document.getText(rangeToReplace);
+		const textToReplace = document.getText(rangeToReplace);
 		if (individualLines) {
 			textToWrapInPreview = textToReplace.split('\n').map(x => x.trim());
 		} else {
-			const wholeFirstLine = editor.document.lineAt(rangeToReplace.start).text;
+			const wholeFirstLine = document.lineAt(rangeToReplace.start).text;
 			const otherMatches = wholeFirstLine.match(/^(\s*)/);
-			const preceedingWhiteSpace = otherMatches ? otherMatches[1] : '';
-			textToWrapInPreview = rangeToReplace.isSingleLine ? [textToReplace] : ['\n\t' + textToReplace.split('\n' + preceedingWhiteSpace).join('\n\t') + '\n'];
+			const precedingWhitespace = otherMatches ? otherMatches[1] : '';
+			textToWrapInPreview = rangeToReplace.isSingleLine ? [textToReplace] : ['\n\t' + textToReplace.split('\n' + precedingWhitespace).join('\n\t') + '\n'];
 		}
 		textToWrapInPreview = textToWrapInPreview.map(e => e.replace(/(\$\d)/g, '\\$1'));
 
@@ -138,13 +148,14 @@ function doWrapping(individualLines: boolean, args: any) {
 				newText = newText.replace(/\$\{[\d]*(:[^}]*)?\}/g, (match) => {		// Replacing Placeholders
 					return match.replace(/^\$\{[\d]*:/, '').replace('}', '');
 				});
+				newText = newText.replace(/\\\$/g, '$'); // Remove backslashes before $
 				builder.replace(oldPreviewRange, newText);
 
 				const expandedTextLines = newText.split('\n');
 				const oldPreviewLines = oldPreviewRange.end.line - oldPreviewRange.start.line + 1;
 				const newLinesInserted = expandedTextLines.length - oldPreviewLines;
 
-				let newPreviewLineStart = oldPreviewRange.start.line + totalLinesInserted;
+				const newPreviewLineStart = oldPreviewRange.start.line + totalLinesInserted;
 				let newPreviewStart = oldPreviewRange.start.character;
 				const newPreviewLineEnd = oldPreviewRange.end.line + totalLinesInserted + newLinesInserted;
 				let newPreviewEnd = expandedTextLines[expandedTextLines.length - 1].length;
@@ -177,19 +188,19 @@ function doWrapping(individualLines: boolean, args: any) {
 			return inPreview ? revertPreview().then(() => { return false; }) : Promise.resolve(inPreview);
 		}
 
-		let extractedResults = helper.extractAbbreviationFromText(inputAbbreviation);
+		const extractedResults = helper.extractAbbreviationFromText(inputAbbreviation);
 		if (!extractedResults) {
 			return Promise.resolve(inPreview);
 		} else if (extractedResults.abbreviation !== inputAbbreviation) {
 			// Not clear what should we do in this case. Warn the user? How?
 		}
 
-		let { abbreviation, filter } = extractedResults;
+		const { abbreviation, filter } = extractedResults;
 		if (definitive) {
 			const revertPromise = inPreview ? revertPreview() : Promise.resolve();
 			return revertPromise.then(() => {
 				const expandAbbrList: ExpandAbbreviationInput[] = rangesToReplace.map(rangesAndContent => {
-					let rangeToReplace = rangesAndContent.originalRange;
+					const rangeToReplace = rangesAndContent.originalRange;
 					let textToWrap: string[];
 					if (individualLines) {
 						textToWrap = rangesAndContent.textToWrapInPreview;
@@ -231,6 +242,24 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 		return fallbackTab();
 	}
 
+	/**
+	 * Short circuit the parsing. If previous character is space, do not expand.
+	 */
+	if (vscode.window.activeTextEditor.selections.length === 1 &&
+		vscode.window.activeTextEditor.selection.isEmpty
+	) {
+		const anchor = vscode.window.activeTextEditor.selection.anchor;
+		if (anchor.character === 0) {
+			return fallbackTab();
+		}
+
+		const prevPositionAnchor = anchor.translate(0, -1);
+		const prevText = vscode.window.activeTextEditor.document.getText(new vscode.Range(prevPositionAnchor, anchor));
+		if (prevText === ' ' || prevText === '\t') {
+			return fallbackTab();
+		}
+	}
+
 	args = args || {};
 	if (!args['language']) {
 		args['language'] = vscode.window.activeTextEditor.document.languageId;
@@ -246,29 +275,23 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 	}
 
 	const editor = vscode.window.activeTextEditor;
-	let rootNode: Node | undefined;
-	let usePartialParsing = vscode.workspace.getConfiguration('emmet')['optimizeStylesheetParsing'] === true;
-	if (editor.selections.length === 1 && isStyleSheet(editor.document.languageId) && usePartialParsing && editor.document.lineCount > 1000) {
-		rootNode = parsePartialStylesheet(editor.document, editor.selection.isReversed ? editor.selection.anchor : editor.selection.active);
-	} else {
-		rootNode = parseDocument(editor.document, false);
-	}
 
 	// When tabbed on a non empty selection, do not treat it as an emmet abbreviation, and fallback to tab instead
 	if (vscode.workspace.getConfiguration('emmet')['triggerExpansionOnTab'] === true && editor.selections.find(x => !x.isEmpty)) {
 		return fallbackTab();
 	}
 
-	let abbreviationList: ExpandAbbreviationInput[] = [];
+	const abbreviationList: ExpandAbbreviationInput[] = [];
 	let firstAbbreviation: string;
 	let allAbbreviationsSame: boolean = true;
 	const helper = getEmmetHelper();
 
-	let getAbbreviation = (document: vscode.TextDocument, selection: vscode.Selection, position: vscode.Position, syntax: string): [vscode.Range | null, string, string] => {
+	const getAbbreviation = (document: vscode.TextDocument, selection: vscode.Selection, position: vscode.Position, syntax: string): [vscode.Range | null, string, string] => {
+		position = document.validatePosition(position);
 		let rangeToReplace: vscode.Range = selection;
 		let abbr = document.getText(rangeToReplace);
 		if (!rangeToReplace.isEmpty) {
-			let extractedResults = helper.extractAbbreviationFromText(abbr);
+			const extractedResults = helper.extractAbbreviationFromText(abbr);
 			if (extractedResults) {
 				return [rangeToReplace, extractedResults.abbreviation, extractedResults.filter];
 			}
@@ -281,56 +304,73 @@ export function expandEmmetAbbreviation(args: any): Thenable<boolean | undefined
 		// Expand cases like <div to <div></div> explicitly
 		// else we will end up with <<div></div>
 		if (syntax === 'html') {
-			let matches = textTillPosition.match(/<(\w+)$/);
+			const matches = textTillPosition.match(/<(\w+)$/);
 			if (matches) {
 				abbr = matches[1];
 				rangeToReplace = new vscode.Range(position.translate(0, -(abbr.length + 1)), position);
 				return [rangeToReplace, abbr, ''];
 			}
 		}
-		let extractedResults = helper.extractAbbreviation(editor.document, position, false);
+		const extractedResults = helper.extractAbbreviation(toLSTextDocument(editor.document), position, { lookAhead: false });
 		if (!extractedResults) {
 			return [null, '', ''];
 		}
 
-		let { abbreviationRange, abbreviation, filter } = extractedResults;
+		const { abbreviationRange, abbreviation, filter } = extractedResults;
 		return [new vscode.Range(abbreviationRange.start.line, abbreviationRange.start.character, abbreviationRange.end.line, abbreviationRange.end.character), abbreviation, filter];
 	};
 
-	let selectionsInReverseOrder = editor.selections.slice(0);
+	const selectionsInReverseOrder = editor.selections.slice(0);
 	selectionsInReverseOrder.sort((a, b) => {
 		const posA = a.isReversed ? a.anchor : a.active;
 		const posB = b.isReversed ? b.anchor : b.active;
 		return posA.compareTo(posB) * -1;
 	});
 
+	let rootNode: Node | undefined;
+	function getRootNode() {
+		if (rootNode) {
+			return rootNode;
+		}
+
+		const usePartialParsing = vscode.workspace.getConfiguration('emmet')['optimizeStylesheetParsing'] === true;
+		if (editor.selections.length === 1 && isStyleSheet(editor.document.languageId) && usePartialParsing && editor.document.lineCount > 1000) {
+			rootNode = parsePartialStylesheet(editor.document, editor.selection.isReversed ? editor.selection.anchor : editor.selection.active);
+		} else {
+			rootNode = parseDocument(editor.document, true);
+		}
+
+		return rootNode;
+	}
+
 	selectionsInReverseOrder.forEach(selection => {
-		let position = selection.isReversed ? selection.anchor : selection.active;
-		let [rangeToReplace, abbreviation, filter] = getAbbreviation(editor.document, selection, position, syntax);
+		const position = selection.isReversed ? selection.anchor : selection.active;
+		const [rangeToReplace, abbreviation, filter] = getAbbreviation(editor.document, selection, position, syntax);
 		if (!rangeToReplace) {
 			return;
 		}
 		if (!helper.isAbbreviationValid(syntax, abbreviation)) {
 			return;
 		}
-		let currentNode = getNode(rootNode, position, true);
+		const offset = editor.document.offsetAt(position);
+		let currentNode = getFlatNode(getRootNode(), offset, true);
 		let validateLocation = true;
 		let syntaxToUse = syntax;
 
 		if (editor.document.languageId === 'html') {
-			if (isStyleAttribute(currentNode, position)) {
+			if (isStyleAttribute(currentNode, offset)) {
 				syntaxToUse = 'css';
 				validateLocation = false;
 			} else {
 				const embeddedCssNode = getEmbeddedCssNodeIfAny(editor.document, currentNode, position);
 				if (embeddedCssNode) {
-					currentNode = getNode(embeddedCssNode, position, true);
+					currentNode = getFlatNode(embeddedCssNode, offset, true);
 					syntaxToUse = 'css';
 				}
 			}
 		}
 
-		if (validateLocation && !isValidLocationForEmmetAbbreviation(editor.document, rootNode, currentNode, syntaxToUse, position, rangeToReplace)) {
+		if (validateLocation && !isValidLocationForEmmetAbbreviation(editor.document, getRootNode(), currentNode, syntaxToUse, offset, rangeToReplace)) {
 			return;
 		}
 
@@ -364,10 +404,10 @@ function fallbackTab(): Thenable<boolean | undefined> {
  * @param position position to validate
  * @param abbreviationRange The range of the abbreviation for which given position is being validated
  */
-export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocument, rootNode: Node | undefined, currentNode: Node | null, syntax: string, position: vscode.Position, abbreviationRange: vscode.Range): boolean {
+export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocument, rootNode: Node | undefined, currentNode: Node | undefined, syntax: string, offset: number, abbreviationRange: vscode.Range): boolean {
 	if (isStyleSheet(syntax)) {
 		const stylesheet = <Stylesheet>rootNode;
-		if (stylesheet && (stylesheet.comments || []).some(x => position.isAfterOrEqual(x.start) && position.isBeforeOrEqual(x.end))) {
+		if (stylesheet && (stylesheet.comments || []).some(x => offset >= x.start && offset <= x.end)) {
 			return false;
 		}
 		// Continue validation only if the file was parse-able and the currentNode has been found
@@ -375,7 +415,7 @@ export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocumen
 			return true;
 		}
 
-		// Fix for https://github.com/Microsoft/vscode/issues/34162
+		// Fix for https://github.com/microsoft/vscode/issues/34162
 		// Other than sass, stylus, we can make use of the terminator tokens to validate position
 		if (syntax !== 'sass' && syntax !== 'stylus' && currentNode.type === 'property') {
 
@@ -390,14 +430,14 @@ export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocumen
 			const propertyNode = <Property>currentNode;
 			if (propertyNode.terminatorToken
 				&& propertyNode.separator
-				&& position.isAfterOrEqual(propertyNode.separatorToken.end)
-				&& position.isBeforeOrEqual(propertyNode.terminatorToken.start)
+				&& offset >= propertyNode.separatorToken.end
+				&& offset <= propertyNode.terminatorToken.start
 				&& abbreviation.indexOf(':') === -1) {
 				return hexColorRegex.test(abbreviation) || abbreviation === '!';
 			}
 			if (!propertyNode.terminatorToken
 				&& propertyNode.separator
-				&& position.isAfterOrEqual(propertyNode.separatorToken.end)
+				&& offset >= propertyNode.separatorToken.end
 				&& abbreviation.indexOf(':') === -1) {
 				return hexColorRegex.test(abbreviation) || abbreviation === '!';
 			}
@@ -415,21 +455,25 @@ export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocumen
 		const currentCssNode = <Rule>currentNode;
 
 		// Position is valid if it occurs after the `{` that marks beginning of rule contents
-		if (position.isAfter(currentCssNode.contentStartToken.end)) {
+		if (offset > currentCssNode.contentStartToken.end) {
 			return true;
 		}
 
-		// Workaround for https://github.com/Microsoft/vscode/30188
+		// Workaround for https://github.com/microsoft/vscode/30188
 		// The line above the rule selector is considered as part of the selector by the css-parser
 		// But we should assume it is a valid location for css properties under the parent rule
 		if (currentCssNode.parent
 			&& (currentCssNode.parent.type === 'rule' || currentCssNode.parent.type === 'at-rule')
-			&& currentCssNode.selectorToken
-			&& position.line !== currentCssNode.selectorToken.end.line
-			&& currentCssNode.selectorToken.start.character === abbreviationRange.start.character
-			&& currentCssNode.selectorToken.start.line === abbreviationRange.start.line
-		) {
-			return true;
+			&& currentCssNode.selectorToken) {
+			const position = document.positionAt(offset);
+			const tokenStartPos = document.positionAt(currentCssNode.selectorToken.start);
+			const tokenEndPos = document.positionAt(currentCssNode.selectorToken.end);
+			if (position.line !== tokenEndPos.line
+				&& tokenStartPos.character === abbreviationRange.start.character
+				&& tokenStartPos.line === abbreviationRange.start.line
+			) {
+				return true;
+			}
 		}
 
 		return false;
@@ -440,7 +484,7 @@ export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocumen
 	const escape = '\\';
 	const question = '?';
 	const currentHtmlNode = <HtmlNode>currentNode;
-	let start = new vscode.Position(0, 0);
+	let start = 0;
 
 	if (currentHtmlNode) {
 		if (currentHtmlNode.name === 'script') {
@@ -458,27 +502,27 @@ export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocumen
 			return false;
 		}
 
-		const innerRange = getInnerRange(currentHtmlNode);
-
-		// Fix for https://github.com/Microsoft/vscode/issues/28829
-		if (!innerRange || !innerRange.contains(position)) {
+		// Fix for https://github.com/microsoft/vscode/issues/28829
+		if (!currentHtmlNode.open || !currentHtmlNode.close ||
+			!(currentHtmlNode.open.end <= offset && offset <= currentHtmlNode.close.start)) {
 			return false;
 		}
 
-		// Fix for https://github.com/Microsoft/vscode/issues/35128
+		// Fix for https://github.com/microsoft/vscode/issues/35128
 		// Find the position up till where we will backtrack looking for unescaped < or >
 		// to decide if current position is valid for emmet expansion
-		start = innerRange.start;
+		start = currentHtmlNode.open.end;
 		let lastChildBeforePosition = currentHtmlNode.firstChild;
 		while (lastChildBeforePosition) {
-			if (lastChildBeforePosition.end.isAfter(position)) {
+			if (lastChildBeforePosition.end > offset) {
 				break;
 			}
 			start = lastChildBeforePosition.end;
 			lastChildBeforePosition = lastChildBeforePosition.nextSibling;
 		}
 	}
-	let textToBackTrack = document.getText(new vscode.Range(start.line, start.character, abbreviationRange.start.line, abbreviationRange.start.character));
+	const startPos = document.positionAt(start);
+	let textToBackTrack = document.getText(new vscode.Range(startPos.line, startPos.character, abbreviationRange.start.line, abbreviationRange.start.character));
 
 	// Worse case scenario is when cursor is inside a big chunk of text which needs to backtracked
 	// Backtrack only 500 offsets to ensure we dont waste time doing this
@@ -508,7 +552,7 @@ export function isValidLocationForEmmetAbbreviation(document: vscode.TextDocumen
 			i--;
 			continue;
 		}
-		// Fix for https://github.com/Microsoft/vscode/issues/55411
+		// Fix for https://github.com/microsoft/vscode/issues/55411
 		// A space is not a valid character right after < in a tag name.
 		if (/\s/.test(char) && textToBackTrack[i] === startAngle) {
 			i--;
@@ -550,7 +594,7 @@ function expandAbbreviationInRange(editor: vscode.TextEditor, expandAbbrList: Ex
 	// Snippet to replace at multiple cursors are not the same
 	// `editor.insertSnippet` will have to be called for each instance separately
 	// We will not be able to maintain multiple cursors after snippet insertion
-	let insertPromises: Thenable<boolean>[] = [];
+	const insertPromises: Thenable<boolean>[] = [];
 	if (!insertSameSnippet) {
 		expandAbbrList.sort((a: ExpandAbbreviationInput, b: ExpandAbbreviationInput) => { return b.rangeToReplace.start.compareTo(a.rangeToReplace.start); }).forEach((expandAbbrInput: ExpandAbbreviationInput) => {
 			let expandedText = expandAbbr(expandAbbrInput);
@@ -568,8 +612,8 @@ function expandAbbreviationInRange(editor: vscode.TextEditor, expandAbbrList: Ex
 	// We can pass all ranges to `editor.insertSnippet` in a single call so that
 	// all cursors are maintained after snippet insertion
 	const anyExpandAbbrInput = expandAbbrList[0];
-	let expandedText = expandAbbr(anyExpandAbbrInput);
-	let allRanges = expandAbbrList.map(value => {
+	const expandedText = expandAbbr(anyExpandAbbrInput);
+	const allRanges = expandAbbrList.map(value => {
 		return new vscode.Range(value.rangeToReplace.start.line, value.rangeToReplace.start.character, value.rangeToReplace.end.line, value.rangeToReplace.end.character);
 	});
 	if (expandedText) {
@@ -578,10 +622,29 @@ function expandAbbreviationInRange(editor: vscode.TextEditor, expandAbbrList: Ex
 	return Promise.resolve(false);
 }
 
+/*
+* Walks the tree rooted at root and apply function fn on each node.
+* if fn return false at any node, the further processing of tree is stopped.
+*/
+function walk(root: any, fn: ((node: any) => boolean)): boolean {
+	let ctx = root;
+	while (ctx) {
+
+		const next = ctx.next;
+		if (fn(ctx) === false || walk(ctx.firstChild, fn) === false) {
+			return false;
+		}
+
+		ctx = next;
+	}
+
+	return true;
+}
+
 /**
  * Expands abbreviation as detailed in given input.
  */
-function expandAbbr(input: ExpandAbbreviationInput): string {
+function expandAbbr(input: ExpandAbbreviationInput): string | undefined {
 	const helper = getEmmetHelper();
 	const expandOptions = helper.getExpandOptions(input.syntax, getEmmetConfiguration(input.syntax), input.filter);
 
@@ -593,7 +656,7 @@ function expandAbbr(input: ExpandAbbreviationInput): string {
 		}
 		expandOptions['text'] = input.textToWrap;
 
-		// Below fixes https://github.com/Microsoft/vscode/issues/29898
+		// Below fixes https://github.com/microsoft/vscode/issues/29898
 		// With this, Emmet formats inline elements as block elements
 		// ensuring the wrapped multi line text does not get merged to a single line
 		if (!input.rangeToReplace.isSingleLine) {
@@ -606,7 +669,7 @@ function expandAbbr(input: ExpandAbbreviationInput): string {
 		// Expand the abbreviation
 
 		if (input.textToWrap) {
-			let parsedAbbr = helper.parseAbbreviation(input.abbreviation, expandOptions);
+			const parsedAbbr = helper.parseAbbreviation(input.abbreviation, expandOptions);
 			if (input.rangeToReplace.isSingleLine && input.textToWrap.length === 1) {
 
 				// Fetch rightmost element in the parsed abbreviation (i.e the element that will contain the wrapped text).
@@ -620,6 +683,18 @@ function expandAbbr(input: ExpandAbbreviationInput): string {
 					wrappingNode.value = '\n\t' + wrappingNode.value + '\n';
 				}
 			}
+
+			// Below fixes https://github.com/microsoft/vscode/issues/78219
+			// walk the tree and remove tags for empty values
+			walk(parsedAbbr, node => {
+				if (node.name !== null && node.value === '' && !node.isSelfClosing && node.children.length === 0) {
+					node.name = '';
+					node.value = '\n';
+				}
+
+				return true;
+			});
+
 			expandedText = helper.expandAbbreviation(parsedAbbr, expandOptions);
 			// All $anyword would have been escaped by the emmet helper.
 			// Remove the escaping backslash from $TM_SELECTED_TEXT so that VS Code Snippet controller can treat it as a variable
@@ -635,7 +710,7 @@ function expandAbbr(input: ExpandAbbreviationInput): string {
 	return expandedText;
 }
 
-function getSyntaxFromArgs(args: { [x: string]: string }): string | undefined {
+export function getSyntaxFromArgs(args: { [x: string]: string }): string | undefined {
 	const mappedModes = getMappingForIncludedLanguages();
 	const language: string = args['language'];
 	const parentMode: string = args['parentMode'];

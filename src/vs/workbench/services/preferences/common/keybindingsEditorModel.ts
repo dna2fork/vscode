@@ -21,6 +21,7 @@ import { KeybindingResolver } from 'vs/platform/keybinding/common/keybindingReso
 export const KEYBINDING_ENTRY_TEMPLATE_ID = 'keybinding.entry.template';
 
 const SOURCE_DEFAULT = localize('default', "Default");
+const SOURCE_EXTENSION = localize('extension', "Extension");
 const SOURCE_USER = localize('user', "User");
 
 export interface KeybindingMatch {
@@ -80,6 +81,8 @@ export class KeybindingsEditorModel extends EditorModel {
 		@IKeybindingService private readonly keybindingsService: IKeybindingService
 	) {
 		super();
+		this._keybindingItems = [];
+		this._keybindingItemsSortedByPrecedence = [];
 		this.modifierLabels = {
 			ui: UILabelProvider.modifierLabels[os],
 			aria: AriaLabelProvider.modifierLabels[os],
@@ -90,9 +93,20 @@ export class KeybindingsEditorModel extends EditorModel {
 	fetch(searchValue: string, sortByPrecedence: boolean = false): IKeybindingItemEntry[] {
 		let keybindingItems = sortByPrecedence ? this._keybindingItemsSortedByPrecedence : this._keybindingItems;
 
-		if (/@source:\s*(user|default)/i.test(searchValue)) {
+		const commandIdMatches = /@command:\s*(.+)/i.exec(searchValue);
+		if (commandIdMatches && commandIdMatches[1]) {
+			return keybindingItems.filter(k => k.command === commandIdMatches[1])
+				.map(keybindingItem => (<IKeybindingItemEntry>{ id: KeybindingsEditorModel.getId(keybindingItem), keybindingItem, templateId: KEYBINDING_ENTRY_TEMPLATE_ID }));
+		}
+
+		if (/@source:\s*(user|default|extension)/i.test(searchValue)) {
 			keybindingItems = this.filterBySource(keybindingItems, searchValue);
-			searchValue = searchValue.replace(/@source:\s*(user|default)/i, '');
+			searchValue = searchValue.replace(/@source:\s*(user|default|extension)/i, '');
+		} else {
+			const keybindingMatches = /@keybinding:\s*((\".+\")|(\S+))/i.exec(searchValue);
+			if (keybindingMatches && (keybindingMatches[2] || keybindingMatches[3])) {
+				searchValue = keybindingMatches[2] || `"${keybindingMatches[3]}"`;
+			}
 		}
 
 		searchValue = searchValue.trim();
@@ -109,6 +123,9 @@ export class KeybindingsEditorModel extends EditorModel {
 		}
 		if (/@source:\s*user/i.test(searchValue)) {
 			return keybindingItems.filter(k => k.source === SOURCE_USER);
+		}
+		if (/@source:\s*extension/i.test(searchValue)) {
+			return keybindingItems.filter(k => k.source === SOURCE_EXTENSION);
 		}
 		return keybindingItems;
 	}
@@ -160,22 +177,22 @@ export class KeybindingsEditorModel extends EditorModel {
 		return result;
 	}
 
-	resolve(editorActionsLabels: Map<string, string>): Promise<EditorModel> {
+	resolve(actionLabels: Map<string, string>): Promise<EditorModel> {
 		const workbenchActionsRegistry = Registry.as<IWorkbenchActionRegistry>(ActionExtensions.WorkbenchActions);
 
 		this._keybindingItemsSortedByPrecedence = [];
 		const boundCommands: Map<string, boolean> = new Map<string, boolean>();
 		for (const keybinding of this.keybindingsService.getKeybindings()) {
 			if (keybinding.command) { // Skip keybindings without commands
-				this._keybindingItemsSortedByPrecedence.push(KeybindingsEditorModel.toKeybindingEntry(keybinding.command, keybinding, workbenchActionsRegistry, editorActionsLabels));
+				this._keybindingItemsSortedByPrecedence.push(KeybindingsEditorModel.toKeybindingEntry(keybinding.command, keybinding, workbenchActionsRegistry, actionLabels));
 				boundCommands.set(keybinding.command, true);
 			}
 		}
 
 		const commandsWithDefaultKeybindings = this.keybindingsService.getDefaultKeybindings().map(keybinding => keybinding.command);
 		for (const command of KeybindingResolver.getAllUnboundCommands(boundCommands)) {
-			const keybindingItem = new ResolvedKeybindingItem(undefined, command, null, undefined, commandsWithDefaultKeybindings.indexOf(command) === -1);
-			this._keybindingItemsSortedByPrecedence.push(KeybindingsEditorModel.toKeybindingEntry(command, keybindingItem, workbenchActionsRegistry, editorActionsLabels));
+			const keybindingItem = new ResolvedKeybindingItem(undefined, command, null, undefined, commandsWithDefaultKeybindings.indexOf(command) === -1, null, false);
+			this._keybindingItemsSortedByPrecedence.push(KeybindingsEditorModel.toKeybindingEntry(command, keybindingItem, workbenchActionsRegistry, actionLabels));
 		}
 		this._keybindingItems = this._keybindingItemsSortedByPrecedence.slice(0).sort((a, b) => KeybindingsEditorModel.compareKeybindingData(a, b));
 		return Promise.resolve(this);
@@ -209,9 +226,9 @@ export class KeybindingsEditorModel extends EditorModel {
 		return a.command.localeCompare(b.command);
 	}
 
-	private static toKeybindingEntry(command: string, keybindingItem: ResolvedKeybindingItem, workbenchActionsRegistry: IWorkbenchActionRegistry, editorActions: Map<string, string>): IKeybindingItem {
+	private static toKeybindingEntry(command: string, keybindingItem: ResolvedKeybindingItem, workbenchActionsRegistry: IWorkbenchActionRegistry, actions: Map<string, string>): IKeybindingItem {
 		const menuCommand = MenuRegistry.getCommand(command)!;
-		const editorActionLabel = editorActions.get(command)!;
+		const editorActionLabel = actions.get(command)!;
 		return <IKeybindingItem>{
 			keybinding: keybindingItem.resolvedKeybinding,
 			keybindingItem,
@@ -219,7 +236,11 @@ export class KeybindingsEditorModel extends EditorModel {
 			commandLabel: KeybindingsEditorModel.getCommandLabel(menuCommand, editorActionLabel),
 			commandDefaultLabel: KeybindingsEditorModel.getCommandDefaultLabel(menuCommand, workbenchActionsRegistry),
 			when: keybindingItem.when ? keybindingItem.when.serialize() : '',
-			source: keybindingItem.isDefault ? SOURCE_DEFAULT : SOURCE_USER
+			source: (
+				keybindingItem.extensionId
+					? (keybindingItem.isBuiltinExtension ? SOURCE_DEFAULT : SOURCE_EXTENSION)
+					: (keybindingItem.isDefault ? SOURCE_DEFAULT : SOURCE_USER)
+			)
 		};
 	}
 
@@ -264,13 +285,13 @@ class KeybindingItemMatches {
 			this.commandLabelMatches = keybindingItem.commandLabel ? this.matches(searchValue, keybindingItem.commandLabel, (word, wordToMatchAgainst) => matchesWords(word, keybindingItem.commandLabel, true), words) : null;
 			this.commandDefaultLabelMatches = keybindingItem.commandDefaultLabel ? this.matches(searchValue, keybindingItem.commandDefaultLabel, (word, wordToMatchAgainst) => matchesWords(word, keybindingItem.commandDefaultLabel, true), words) : null;
 			this.sourceMatches = this.matches(searchValue, keybindingItem.source, (word, wordToMatchAgainst) => matchesWords(word, keybindingItem.source, true), words);
-			this.whenMatches = keybindingItem.when ? this.matches(searchValue, keybindingItem.when, or(matchesWords, matchesCamelCase), words) : null;
+			this.whenMatches = keybindingItem.when ? this.matches(null, keybindingItem.when, or(matchesWords, matchesCamelCase), words) : null;
 		}
 		this.keybindingMatches = keybindingItem.keybinding ? this.matchesKeybinding(keybindingItem.keybinding, searchValue, keybindingWords, completeMatch) : null;
 	}
 
-	private matches(searchValue: string, wordToMatchAgainst: string, wordMatchesFilter: IFilter, words: string[]): IMatch[] | null {
-		let matches = wordFilter(searchValue, wordToMatchAgainst);
+	private matches(searchValue: string | null, wordToMatchAgainst: string, wordMatchesFilter: IFilter, words: string[]): IMatch[] | null {
+		let matches = searchValue ? wordFilter(searchValue, wordToMatchAgainst) : null;
 		if (!matches) {
 			matches = this.matchesWords(words, wordToMatchAgainst, wordMatchesFilter);
 		}
@@ -419,22 +440,6 @@ class KeybindingItemMatches {
 		return this.wordMatchesMetaModifier(word);
 	}
 
-	private wordMatchesMetaModifier(word: string): boolean {
-		if (matchesPrefix(this.modifierLabels.ui.metaKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.aria.metaKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.user.metaKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(localize('meta', "meta"), word)) {
-			return true;
-		}
-		return false;
-	}
-
 	private matchesCtrlModifier(keybinding: ResolvedKeybindingPart | null, word: string): boolean {
 		if (!keybinding) {
 			return false;
@@ -443,19 +448,6 @@ class KeybindingItemMatches {
 			return false;
 		}
 		return this.wordMatchesCtrlModifier(word);
-	}
-
-	private wordMatchesCtrlModifier(word: string): boolean {
-		if (matchesPrefix(this.modifierLabels.ui.ctrlKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.aria.ctrlKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.user.ctrlKey, word)) {
-			return true;
-		}
-		return false;
 	}
 
 	private matchesShiftModifier(keybinding: ResolvedKeybindingPart | null, word: string): boolean {
@@ -468,19 +460,6 @@ class KeybindingItemMatches {
 		return this.wordMatchesShiftModifier(word);
 	}
 
-	private wordMatchesShiftModifier(word: string): boolean {
-		if (matchesPrefix(this.modifierLabels.ui.shiftKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.aria.shiftKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.user.shiftKey, word)) {
-			return true;
-		}
-		return false;
-	}
-
 	private matchesAltModifier(keybinding: ResolvedKeybindingPart | null, word: string): boolean {
 		if (!keybinding) {
 			return false;
@@ -489,22 +468,6 @@ class KeybindingItemMatches {
 			return false;
 		}
 		return this.wordMatchesAltModifier(word);
-	}
-
-	private wordMatchesAltModifier(word: string): boolean {
-		if (matchesPrefix(this.modifierLabels.ui.altKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.aria.altKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(this.modifierLabels.user.altKey, word)) {
-			return true;
-		}
-		if (matchesPrefix(localize('option', "option"), word)) {
-			return true;
-		}
-		return false;
 	}
 
 	private hasAnyMatch(keybindingMatch: KeybindingMatch): boolean {
@@ -568,6 +531,64 @@ class KeybindingItemMatches {
 			return true;
 		}
 		if (this.wordMatchesShiftModifier(word)) {
+			return true;
+		}
+		return false;
+	}
+
+	private wordMatchesAltModifier(word: string): boolean {
+		if (strings.equalsIgnoreCase(this.modifierLabels.ui.altKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.aria.altKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.user.altKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(localize('option', "option"), word)) {
+			return true;
+		}
+		return false;
+	}
+
+	private wordMatchesCtrlModifier(word: string): boolean {
+		if (strings.equalsIgnoreCase(this.modifierLabels.ui.ctrlKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.aria.ctrlKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.user.ctrlKey, word)) {
+			return true;
+		}
+		return false;
+	}
+
+	private wordMatchesMetaModifier(word: string): boolean {
+		if (strings.equalsIgnoreCase(this.modifierLabels.ui.metaKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.aria.metaKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.user.metaKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(localize('meta', "meta"), word)) {
+			return true;
+		}
+		return false;
+	}
+
+	private wordMatchesShiftModifier(word: string): boolean {
+		if (strings.equalsIgnoreCase(this.modifierLabels.ui.shiftKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.aria.shiftKey, word)) {
+			return true;
+		}
+		if (strings.equalsIgnoreCase(this.modifierLabels.user.shiftKey, word)) {
 			return true;
 		}
 		return false;

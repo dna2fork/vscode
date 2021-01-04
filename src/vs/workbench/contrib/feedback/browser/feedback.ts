@@ -11,15 +11,19 @@ import { IContextViewService } from 'vs/platform/contextview/browser/contextView
 import * as dom from 'vs/base/browser/dom';
 import { ICommandService } from 'vs/platform/commands/common/commands';
 import { IIntegrityService } from 'vs/workbench/services/integrity/common/integrity';
-import { IThemeService, registerThemingParticipant, ITheme, ICssStyleCollector } from 'vs/platform/theme/common/themeService';
+import { IThemeService, registerThemingParticipant, IColorTheme, ICssStyleCollector } from 'vs/platform/theme/common/themeService';
 import { attachButtonStyler, attachStylerCallback } from 'vs/platform/theme/common/styler';
-import { editorWidgetBackground, editorWidgetForeground, widgetShadow, inputBorder, inputForeground, inputBackground, inputActiveOptionBorder, editorBackground, buttonBackground, contrastBorder, darken } from 'vs/platform/theme/common/colorRegistry';
+import { editorWidgetBackground, editorWidgetForeground, widgetShadow, inputBorder, inputForeground, inputBackground, inputActiveOptionBorder, editorBackground, textLinkForeground, contrastBorder, darken } from 'vs/platform/theme/common/colorRegistry';
 import { IAnchor } from 'vs/base/browser/ui/contextview/contextview';
 import { Button } from 'vs/base/browser/ui/button/button';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { WorkbenchActionExecutedEvent, WorkbenchActionExecutedClassification } from 'vs/base/common/actions';
-import { IStatusbarService } from 'vs/platform/statusbar/common/statusbar';
-import { IProductService } from 'vs/platform/product/common/product';
+import { IStatusbarService } from 'vs/workbench/services/statusbar/common/statusbar';
+import { IProductService } from 'vs/platform/product/common/productService';
+import { IOpenerService } from 'vs/platform/opener/common/opener';
+import { StandardKeyboardEvent } from 'vs/base/browser/keyboardEvent';
+import { KeyCode } from 'vs/base/common/keyCodes';
+import { Codicon } from 'vs/base/common/codicons';
 
 export interface IFeedback {
 	feedback: string;
@@ -27,7 +31,7 @@ export interface IFeedback {
 }
 
 export interface IFeedbackDelegate {
-	submitFeedback(feedback: IFeedback): void;
+	submitFeedback(feedback: IFeedback, openerService: IOpenerService): void;
 	getCharacterLimit(sentiment: number): number;
 }
 
@@ -46,13 +50,13 @@ export class FeedbackDropdown extends Dropdown {
 
 	private readonly feedbackDelegate: IFeedbackDelegate;
 
-	private feedbackForm: HTMLFormElement | null;
-	private feedbackDescriptionInput: HTMLTextAreaElement | null;
-	private smileyInput: HTMLElement | null;
-	private frownyInput: HTMLElement | null;
-	private sendButton: Button;
-	private hideButton: HTMLInputElement;
-	private remainingCharacterCount: HTMLElement;
+	private feedbackForm: HTMLFormElement | null = null;
+	private feedbackDescriptionInput: HTMLTextAreaElement | null = null;
+	private smileyInput: HTMLElement | null = null;
+	private frownyInput: HTMLElement | null = null;
+	private sendButton: Button | null = null;
+	private hideButton: HTMLInputElement | null = null;
+	private remainingCharacterCount: HTMLElement | null = null;
 
 	private requestFeatureLink: string | undefined;
 
@@ -66,7 +70,8 @@ export class FeedbackDropdown extends Dropdown {
 		@IIntegrityService private readonly integrityService: IIntegrityService,
 		@IThemeService private readonly themeService: IThemeService,
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
-		@IProductService productService: IProductService
+		@IProductService productService: IProductService,
+		@IOpenerService private readonly openerService: IOpenerService
 	) {
 		super(container, options);
 
@@ -83,7 +88,7 @@ export class FeedbackDropdown extends Dropdown {
 			}
 		});
 
-		dom.addClass(this.element, 'send-feedback');
+		this.element.classList.add('send-feedback');
 		this.element.title = nls.localize('sendFeedback', "Tweet Feedback");
 	}
 
@@ -92,7 +97,7 @@ export class FeedbackDropdown extends Dropdown {
 
 		return {
 			x: position.left + position.width, // center above the container
-			y: position.top - 9, // above status bar
+			y: position.top - 26, // above status bar and beak
 			width: position.width,
 			height: position.height
 		};
@@ -101,7 +106,7 @@ export class FeedbackDropdown extends Dropdown {
 	protected renderContents(container: HTMLElement): IDisposable {
 		const disposables = new DisposableStore();
 
-		dom.addClass(container, 'monaco-menu-container');
+		container.classList.add('monaco-menu-container');
 
 		// Form
 		this.feedbackForm = dom.append<HTMLFormElement>(container, dom.$('form.feedback-form'));
@@ -111,13 +116,19 @@ export class FeedbackDropdown extends Dropdown {
 		dom.append(this.feedbackForm, dom.$('h2.title')).textContent = nls.localize("label.sendASmile", "Tweet us your feedback.");
 
 		// Close Button (top right)
-		const closeBtn = dom.append(this.feedbackForm, dom.$('div.cancel'));
+		const closeBtn = dom.append(this.feedbackForm, dom.$('div.cancel' + Codicon.close.cssSelector));
 		closeBtn.tabIndex = 0;
 		closeBtn.setAttribute('role', 'button');
 		closeBtn.title = nls.localize('close', "Close");
 
+		disposables.add(dom.addDisposableListener(container, dom.EventType.KEY_DOWN, keyboardEvent => {
+			const standardKeyboardEvent = new StandardKeyboardEvent(keyboardEvent);
+			if (standardKeyboardEvent.keyCode === KeyCode.Escape) {
+				this.hide();
+			}
+		}));
 		disposables.add(dom.addDisposableListener(closeBtn, dom.EventType.MOUSE_OVER, () => {
-			const theme = this.themeService.getTheme();
+			const theme = this.themeService.getColorTheme();
 			let darkenFactor: number | undefined;
 			switch (theme.type) {
 				case 'light':
@@ -140,7 +151,7 @@ export class FeedbackDropdown extends Dropdown {
 		}));
 
 		disposables.add(dom.addDisposableListener(closeBtn, dom.EventType.MOUSE_OUT, () => {
-			closeBtn.style.backgroundColor = null;
+			closeBtn.style.backgroundColor = '';
 		}));
 
 		this.invoke(closeBtn, disposables, () => this.hide());
@@ -164,7 +175,7 @@ export class FeedbackDropdown extends Dropdown {
 
 		// Sentiment: Smiley
 		this.smileyInput = dom.append(feedbackSentiment, dom.$('div.sentiment'));
-		dom.addClass(this.smileyInput, 'smile');
+		this.smileyInput.classList.add('smile');
 		this.smileyInput.setAttribute('aria-checked', 'false');
 		this.smileyInput.setAttribute('aria-label', nls.localize('smileCaption', "Happy Feedback Sentiment"));
 		this.smileyInput.setAttribute('role', 'checkbox');
@@ -175,7 +186,7 @@ export class FeedbackDropdown extends Dropdown {
 
 		// Sentiment: Frowny
 		this.frownyInput = dom.append(feedbackSentiment, dom.$('div.sentiment'));
-		dom.addClass(this.frownyInput, 'frown');
+		this.frownyInput.classList.add('frown');
 		this.frownyInput.setAttribute('aria-checked', 'false');
 		this.frownyInput.setAttribute('aria-label', nls.localize('frownCaption', "Sad Feedback Sentiment"));
 		this.frownyInput.setAttribute('role', 'checkbox');
@@ -185,10 +196,10 @@ export class FeedbackDropdown extends Dropdown {
 		this.invoke(this.frownyInput, disposables, () => this.setSentiment(false));
 
 		if (this.sentiment === 1) {
-			dom.addClass(this.smileyInput, 'checked');
+			this.smileyInput.classList.add('checked');
 			this.smileyInput.setAttribute('aria-checked', 'true');
 		} else {
-			dom.addClass(this.frownyInput, 'checked');
+			this.frownyInput.classList.add('checked');
 			this.frownyInput.setAttribute('aria-checked', 'true');
 		}
 
@@ -253,20 +264,21 @@ export class FeedbackDropdown extends Dropdown {
 		// Checkbox: Hide Feedback Smiley
 		const hideButtonContainer = dom.append(buttonsContainer, dom.$('div.hide-button-container'));
 
-		this.hideButton = dom.append(hideButtonContainer, dom.$('input.hide-button'));
+		this.hideButton = dom.append(hideButtonContainer, dom.$('input.hide-button')) as HTMLInputElement;
 		this.hideButton.type = 'checkbox';
 		this.hideButton.checked = true;
 		this.hideButton.id = 'hide-button';
 
 		const hideButtonLabel = dom.append(hideButtonContainer, dom.$('label'));
 		hideButtonLabel.setAttribute('for', 'hide-button');
-		hideButtonLabel.textContent = nls.localize('showFeedback', "Show Feedback Smiley in Status Bar");
+		hideButtonLabel.textContent = nls.localize('showFeedback', "Show Feedback Icon in Status Bar");
 
 		// Button: Send Feedback
 		this.sendButton = new Button(buttonsContainer);
 		this.sendButton.enabled = false;
 		this.sendButton.label = nls.localize('tweet', "Tweet");
-		dom.addClass(this.sendButton.element, 'send');
+		dom.prepend(this.sendButton.element, dom.$('span' + Codicon.twitter.cssSelector));
+		this.sendButton.element.classList.add('send');
 		this.sendButton.element.title = nls.localize('tweetFeedback', "Tweet Feedback");
 		disposables.add(attachButtonStyler(this.sendButton, this.themeService));
 
@@ -274,17 +286,17 @@ export class FeedbackDropdown extends Dropdown {
 
 		disposables.add(attachStylerCallback(this.themeService, { widgetShadow, editorWidgetBackground, editorWidgetForeground, inputBackground, inputForeground, inputBorder, editorBackground, contrastBorder }, colors => {
 			if (this.feedbackForm) {
-				this.feedbackForm.style.backgroundColor = colors.editorWidgetBackground ? colors.editorWidgetBackground.toString() : null;
-				this.feedbackForm.style.color = colors.editorWidgetForeground ? colors.editorWidgetForeground.toString() : null;
-				this.feedbackForm.style.boxShadow = colors.widgetShadow ? `0 0 8px ${colors.widgetShadow}` : null;
+				this.feedbackForm.style.backgroundColor = colors.editorWidgetBackground ? colors.editorWidgetBackground.toString() : '';
+				this.feedbackForm.style.color = colors.editorWidgetForeground ? colors.editorWidgetForeground.toString() : '';
+				this.feedbackForm.style.boxShadow = colors.widgetShadow ? `0 0 8px 2px ${colors.widgetShadow}` : '';
 			}
 			if (this.feedbackDescriptionInput) {
-				this.feedbackDescriptionInput.style.backgroundColor = colors.inputBackground ? colors.inputBackground.toString() : null;
-				this.feedbackDescriptionInput.style.color = colors.inputForeground ? colors.inputForeground.toString() : null;
+				this.feedbackDescriptionInput.style.backgroundColor = colors.inputBackground ? colors.inputBackground.toString() : '';
+				this.feedbackDescriptionInput.style.color = colors.inputForeground ? colors.inputForeground.toString() : '';
 				this.feedbackDescriptionInput.style.border = `1px solid ${colors.inputBorder || 'transparent'}`;
 			}
 
-			contactUsContainer.style.backgroundColor = colors.editorBackground ? colors.editorBackground.toString() : null;
+			contactUsContainer.style.backgroundColor = colors.editorBackground ? colors.editorBackground.toString() : '';
 			contactUsContainer.style.border = `1px solid ${colors.contrastBorder || 'transparent'}`;
 		}));
 
@@ -316,7 +328,7 @@ export class FeedbackDropdown extends Dropdown {
 	}
 
 	private updateCharCountText(): void {
-		if (this.feedbackDescriptionInput) {
+		if (this.feedbackDescriptionInput && this.remainingCharacterCount && this.sendButton) {
 			this.remainingCharacterCount.innerText = this.getCharCountText(this.feedbackDescriptionInput.value.length);
 			this.sendButton.enabled = this.feedbackDescriptionInput.value.length > 0;
 		}
@@ -325,20 +337,20 @@ export class FeedbackDropdown extends Dropdown {
 	private setSentiment(smile: boolean): void {
 		if (smile) {
 			if (this.smileyInput) {
-				dom.addClass(this.smileyInput, 'checked');
+				this.smileyInput.classList.add('checked');
 				this.smileyInput.setAttribute('aria-checked', 'true');
 			}
 			if (this.frownyInput) {
-				dom.removeClass(this.frownyInput, 'checked');
+				this.frownyInput.classList.remove('checked');
 				this.frownyInput.setAttribute('aria-checked', 'false');
 			}
 		} else {
 			if (this.frownyInput) {
-				dom.addClass(this.frownyInput, 'checked');
+				this.frownyInput.classList.add('checked');
 				this.frownyInput.setAttribute('aria-checked', 'true');
 			}
 			if (this.smileyInput) {
-				dom.removeClass(this.smileyInput, 'checked');
+				this.smileyInput.classList.remove('checked');
 				this.smileyInput.setAttribute('aria-checked', 'false');
 			}
 		}
@@ -373,6 +385,8 @@ export class FeedbackDropdown extends Dropdown {
 		if (this.options.onFeedbackVisibilityChange) {
 			this.options.onFeedbackVisibilityChange(true);
 		}
+
+		this.updateCharCountText();
 	}
 
 	protected onHide(): void {
@@ -415,13 +429,13 @@ export class FeedbackDropdown extends Dropdown {
 		this.feedbackDelegate.submitFeedback({
 			feedback: this.feedbackDescriptionInput.value,
 			sentiment: this.sentiment
-		});
+		}, this.openerService);
 
 		this.hide();
 	}
 }
 
-registerThemingParticipant((theme: ITheme, collector: ICssStyleCollector) => {
+registerThemingParticipant((theme: IColorTheme, collector: ICssStyleCollector) => {
 
 	// Sentiment Buttons
 	const inputActiveOptionBorderColor = theme.getColor(inputActiveOptionBorder);
@@ -430,7 +444,7 @@ registerThemingParticipant((theme: ITheme, collector: ICssStyleCollector) => {
 	}
 
 	// Links
-	const linkColor = theme.getColor(buttonBackground) || theme.getColor(contrastBorder);
+	const linkColor = theme.getColor(textLinkForeground) || theme.getColor(contrastBorder);
 	if (linkColor) {
 		collector.addRule(`.monaco-workbench .feedback-form .content .channels a { color: ${linkColor}; }`);
 	}

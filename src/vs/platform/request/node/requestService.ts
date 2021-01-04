@@ -5,19 +5,19 @@
 
 import * as https from 'https';
 import * as http from 'http';
-import { Stream } from 'stream';
+import * as streams from 'vs/base/common/stream';
 import { createGunzip } from 'zlib';
 import { parse as parseUrl } from 'url';
 import { Disposable } from 'vs/base/common/lifecycle';
-import { assign } from 'vs/base/common/objects';
 import { isBoolean, isNumber } from 'vs/base/common/types';
 import { canceled } from 'vs/base/common/errors';
 import { CancellationToken } from 'vs/base/common/cancellation';
-import { IRequestOptions, IRequestContext, IRequestService, IHTTPConfiguration } from 'vs/platform/request/common/request';
+import { IRequestService, IHTTPConfiguration } from 'vs/platform/request/common/request';
+import { IRequestOptions, IRequestContext } from 'vs/base/parts/request/common/request';
 import { getProxyAgent, Agent } from 'vs/platform/request/node/proxy';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { ILogService } from 'vs/platform/log/common/log';
-import { toVSBufferReadableStream } from 'vs/base/common/buffer';
+import { streamToBufferReadableStream } from 'vs/base/common/buffer';
 
 export interface IRawRequestFunction {
 	(options: http.RequestOptions, callback?: (res: http.IncomingMessage) => void): http.ClientRequest;
@@ -35,10 +35,10 @@ export interface NodeRequestOptions extends IRequestOptions {
  */
 export class RequestService extends Disposable implements IRequestService {
 
-	_serviceBrand: any;
+	declare readonly _serviceBrand: undefined;
 
 	private proxyUrl?: string;
-	private strictSSL: boolean;
+	private strictSSL: boolean | undefined;
 	private authorization?: string;
 
 	constructor(
@@ -66,7 +66,10 @@ export class RequestService extends Disposable implements IRequestService {
 		options.strictSSL = strictSSL;
 
 		if (this.authorization) {
-			options.headers = assign(options.headers || {}, { 'Proxy-Authorization': this.authorization });
+			options.headers = {
+				...(options.headers || {}),
+				'Proxy-Authorization': this.authorization
+			};
 		}
 
 		return this._request(options, token);
@@ -106,18 +109,19 @@ export class RequestService extends Disposable implements IRequestService {
 			req = rawRequest(opts, (res: http.IncomingMessage) => {
 				const followRedirects: number = isNumber(options.followRedirects) ? options.followRedirects : 3;
 				if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && followRedirects > 0 && res.headers['location']) {
-					this._request(assign({}, options, {
+					this._request({
+						...options,
 						url: res.headers['location'],
 						followRedirects: followRedirects - 1
-					}), token).then(c, e);
+					}, token).then(c, e);
 				} else {
-					let stream: Stream = res;
+					let stream: streams.ReadableStreamEvents<Uint8Array> = res;
 
 					if (res.headers['content-encoding'] === 'gzip') {
-						stream = stream.pipe(createGunzip());
+						stream = res.pipe(createGunzip());
 					}
 
-					c({ res, stream: toVSBufferReadableStream(stream) } as IRequestContext);
+					c({ res, stream: streamToBufferReadableStream(stream) } as IRequestContext);
 				}
 			});
 
@@ -140,7 +144,9 @@ export class RequestService extends Disposable implements IRequestService {
 				e(canceled());
 			});
 		});
-
 	}
 
+	async resolveProxy(url: string): Promise<string | undefined> {
+		return undefined; // currently not implemented in node
+	}
 }

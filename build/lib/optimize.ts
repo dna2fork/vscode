@@ -8,18 +8,12 @@
 import * as es from 'event-stream';
 import * as gulp from 'gulp';
 import * as concat from 'gulp-concat';
-import * as minifyCSS from 'gulp-cssnano';
 import * as filter from 'gulp-filter';
 import * as flatmap from 'gulp-flatmap';
-import * as sourcemaps from 'gulp-sourcemaps';
-import * as uglify from 'gulp-uglify';
-import * as composer from 'gulp-uglify/composer';
 import * as fancyLog from 'fancy-log';
 import * as ansiColors from 'ansi-colors';
 import * as path from 'path';
 import * as pump from 'pump';
-import * as sm from 'source-map';
-import * as uglifyes from 'uglify-es';
 import * as VinylFile from 'vinyl';
 import * as bundle from './bundle';
 import { Language, processNlsFiles } from './i18n';
@@ -32,13 +26,13 @@ function log(prefix: string, message: string): void {
 	fancyLog(ansiColors.cyan('[' + prefix + ']'), message);
 }
 
-export function loaderConfig(emptyPaths?: string[]) {
+export function loaderConfig() {
 	const result: any = {
 		paths: {
 			'vs': 'out-build/vs',
 			'vscode': 'empty:'
 		},
-		nodeModules: emptyPaths || []
+		amdModulesPattern: /^vs\//
 	};
 
 	result['vs/css'] = { inlineResources: true };
@@ -47,10 +41,6 @@ export function loaderConfig(emptyPaths?: string[]) {
 }
 
 const IS_OUR_COPYRIGHT_REGEXP = /Copyright \(C\) Microsoft Corporation/i;
-
-declare class FileSourceMap extends VinylFile {
-	public sourceMap: sm.RawSourceMap;
-}
 
 function loader(src: string, bundledFileHeader: string, bundleLoader: boolean): NodeJS.ReadWriteStream {
 	let sources = [
@@ -72,7 +62,7 @@ function loader(src: string, bundledFileHeader: string, bundleLoader: boolean): 
 					isFirst = false;
 					this.emit('data', new VinylFile({
 						path: 'fake',
-						base: '',
+						base: '.',
 						contents: Buffer.from(bundledFileHeader)
 					}));
 					this.emit('data', data);
@@ -80,16 +70,11 @@ function loader(src: string, bundledFileHeader: string, bundleLoader: boolean): 
 					this.emit('data', data);
 				}
 			}))
-			.pipe(util.loadSourcemaps())
 			.pipe(concat('vs/loader.js'))
-			.pipe(es.mapSync<FileSourceMap, FileSourceMap>(function (f) {
-				f.sourceMap.sourceRoot = util.toFileUri(path.join(REPO_ROOT_PATH, 'src'));
-				return f;
-			}))
 	);
 }
 
-function toConcatStream(src: string, bundledFileHeader: string, sources: bundle.IFile[], dest: string): NodeJS.ReadWriteStream {
+function toConcatStream(src: string, bundledFileHeader: string, sources: bundle.IFile[], dest: string, fileContentMapper: (contents: string, path: string) => string): NodeJS.ReadWriteStream {
 	const useSourcemaps = /\.js$/.test(dest) && !/\.nls\.js$/.test(dest);
 
 	// If a bundle ends up including in any of the sources our copyright, then
@@ -112,12 +97,14 @@ function toConcatStream(src: string, bundledFileHeader: string, sources: bundle.
 
 	const treatedSources = sources.map(function (source) {
 		const root = source.path ? REPO_ROOT_PATH.replace(/\\/g, '/') : '';
-		const base = source.path ? root + `/${src}` : '';
+		const base = source.path ? root + `/${src}` : '.';
+		const path = source.path ? root + '/' + source.path.replace(/\\/g, '/') : 'fake';
+		const contents = source.path ? fileContentMapper(source.contents, path) : source.contents;
 
 		return new VinylFile({
-			path: source.path ? root + '/' + source.path.replace(/\\/g, '/') : 'fake',
+			path: path,
 			base: base,
-			contents: Buffer.from(source.contents)
+			contents: Buffer.from(contents)
 		});
 	});
 
@@ -127,9 +114,9 @@ function toConcatStream(src: string, bundledFileHeader: string, sources: bundle.
 		.pipe(createStatsStream(dest));
 }
 
-function toBundleStream(src: string, bundledFileHeader: string, bundles: bundle.IConcatFile[]): NodeJS.ReadWriteStream {
+function toBundleStream(src: string, bundledFileHeader: string, bundles: bundle.IConcatFile[], fileContentMapper: (contents: string, path: string) => string): NodeJS.ReadWriteStream {
 	return es.merge(bundles.map(function (bundle) {
-		return toConcatStream(src, bundledFileHeader, bundle.sources, bundle.dest);
+		return toConcatStream(src, bundledFileHeader, bundle.sources, bundle.dest, fileContentMapper);
 	}));
 }
 
@@ -167,6 +154,12 @@ export interface IOptimizeTaskOpts {
 	 * (out folder name)
 	 */
 	languages?: Language[];
+	/**
+	 * File contents interceptor
+	 * @param contents The contens of the file
+	 * @param path The absolute file path, always using `/`, even on Windows
+	 */
+	fileContentMapper?: (contents: string, path: string) => string;
 }
 
 const DEFAULT_FILE_HEADER = [
@@ -183,8 +176,11 @@ export function optimizeTask(opts: IOptimizeTaskOpts): () => NodeJS.ReadWriteStr
 	const bundledFileHeader = opts.header || DEFAULT_FILE_HEADER;
 	const bundleLoader = (typeof opts.bundleLoader === 'undefined' ? true : opts.bundleLoader);
 	const out = opts.out;
+	const fileContentMapper = opts.fileContentMapper || ((contents: string, _path: string) => contents);
 
 	return function () {
+		const sourcemaps = <typeof import('gulp-sourcemaps')>require('gulp-sourcemaps');
+
 		const bundlesStream = es.through(); // this stream will contain the bundled files
 		const resourcesStream = es.through(); // this stream will contain the resources
 		const bundleInfoStream = es.through(); // this stream will contain bundleInfo.json
@@ -192,7 +188,7 @@ export function optimizeTask(opts: IOptimizeTaskOpts): () => NodeJS.ReadWriteStr
 		bundle.bundle(entryPoints, loaderConfig, function (err, result) {
 			if (err || !result) { return bundlesStream.emit('error', JSON.stringify(err)); }
 
-			toBundleStream(src, bundledFileHeader, result.files).pipe(bundlesStream);
+			toBundleStream(src, bundledFileHeader, result.files, fileContentMapper).pipe(bundlesStream);
 
 			// Remove css inlined resources
 			const filteredResources = resources.slice();
@@ -244,6 +240,9 @@ declare class FileWithCopyright extends VinylFile {
  * to have a file "context" to include our copyright only once per file.
  */
 function uglifyWithCopyrights(): NodeJS.ReadWriteStream {
+	const composer = <typeof import('gulp-uglify/composer')>require('gulp-uglify/composer');
+	const terser = <typeof import('terser')>require('terser');
+
 	const preserveComments = (f: FileWithCopyright) => {
 		return (_node: any, comment: { value: string; type: string; }) => {
 			const text = comment.value;
@@ -273,7 +272,7 @@ function uglifyWithCopyrights(): NodeJS.ReadWriteStream {
 		};
 	};
 
-	const minify = (composer as any)(uglifyes);
+	const minify = (composer as any)(terser);
 	const input = es.through();
 	const output = input
 		.pipe(flatmap((stream, f) => {
@@ -292,6 +291,10 @@ export function minifyTask(src: string, sourceMapBaseUrl?: string): (cb: any) =>
 	const sourceMappingURL = sourceMapBaseUrl ? ((f: any) => `${sourceMapBaseUrl}/${f.relative}.map`) : undefined;
 
 	return cb => {
+		const minifyCSS = <typeof import('gulp-cssnano')>require('gulp-cssnano');
+		const uglify = <typeof import('gulp-uglify')>require('gulp-uglify');
+		const sourcemaps = <typeof import('gulp-sourcemaps')>require('gulp-sourcemaps');
+
 		const jsFilter = filter('**/*.js', { restore: true });
 		const cssFilter = filter('**/*.css', { restore: true });
 

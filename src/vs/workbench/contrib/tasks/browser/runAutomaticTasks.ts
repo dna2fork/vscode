@@ -8,10 +8,12 @@ import { Disposable } from 'vs/base/common/lifecycle';
 import { IWorkbenchContribution } from 'vs/workbench/common/contributions';
 import { ITaskService, WorkspaceFolderTaskResult } from 'vs/workbench/contrib/tasks/common/taskService';
 import { forEach } from 'vs/base/common/collections';
-import { RunOnOptions, Task, TaskRunSource } from 'vs/workbench/contrib/tasks/common/tasks';
-import { IStorageService, StorageScope } from 'vs/platform/storage/common/storage';
+import { RunOnOptions, Task, TaskRunSource, TASKS_CATEGORY } from 'vs/workbench/contrib/tasks/common/tasks';
+import { IStorageService, StorageScope, StorageTarget } from 'vs/platform/storage/common/storage';
 import { INotificationService, Severity } from 'vs/platform/notification/common/notification';
-import { Action } from 'vs/base/common/actions';
+import { IQuickPickItem, IQuickInputService } from 'vs/platform/quickinput/common/quickInput';
+import { Action2 } from 'vs/platform/actions/common/actions';
+import { ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
 
 const ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE = 'tasks.run.allowAutomatic';
 
@@ -36,7 +38,7 @@ export class RunAutomaticTasks extends Disposable implements IWorkbenchContribut
 		}
 	}
 
-	private static runTasks(taskService: ITaskService, tasks: Array<Task | Promise<Task>>) {
+	private static runTasks(taskService: ITaskService, tasks: Array<Task | Promise<Task | undefined>>) {
 		tasks.forEach(task => {
 			if (task instanceof Promise) {
 				task.then(promiseResult => {
@@ -50,8 +52,8 @@ export class RunAutomaticTasks extends Disposable implements IWorkbenchContribut
 		});
 	}
 
-	private static findAutoTasks(taskService: ITaskService, workspaceTaskResult: Map<string, WorkspaceFolderTaskResult>): { tasks: Array<Task | Promise<Task>>, taskNames: Array<string> } {
-		const tasks = new Array<Task | Promise<Task>>();
+	private static findAutoTasks(taskService: ITaskService, workspaceTaskResult: Map<string, WorkspaceFolderTaskResult>): { tasks: Array<Task | Promise<Task | undefined>>, taskNames: Array<string> } {
+		const tasks = new Array<Task | Promise<Task | undefined>>();
 		const taskNames = new Array<string>();
 		if (workspaceTaskResult) {
 			workspaceTaskResult.forEach(resultElement => {
@@ -66,7 +68,7 @@ export class RunAutomaticTasks extends Disposable implements IWorkbenchContribut
 				if (resultElement.configurations) {
 					forEach(resultElement.configurations.byIdentifier, (configedTask) => {
 						if (configedTask.value.runOptions.runOn === RunOnOptions.folderOpen) {
-							tasks.push(new Promise<Task>(resolve => {
+							tasks.push(new Promise<Task | undefined>(resolve => {
 								taskService.getTask(resultElement.workspaceFolder, configedTask.value._id, true).then(task => resolve(task));
 							}));
 							if (configedTask.value._label) {
@@ -108,14 +110,14 @@ export class RunAutomaticTasks extends Disposable implements IWorkbenchContribut
 					label: nls.localize('allow', "Allow and run"),
 					run: () => {
 						resolve(true);
-						storageService.store(ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE, true, StorageScope.WORKSPACE);
+						storageService.store(ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE, true, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 					}
 				},
 				{
 					label: nls.localize('disallow', "Disallow"),
 					run: () => {
 						resolve(false);
-						storageService.store(ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE, false, StorageScope.WORKSPACE);
+						storageService.store(ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE, false, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 					}
 				},
 				{
@@ -131,38 +133,29 @@ export class RunAutomaticTasks extends Disposable implements IWorkbenchContribut
 
 }
 
-export class AllowAutomaticTaskRunning extends Action {
+export class ManageAutomaticTaskRunning extends Action2 {
 
-	public static readonly ID = 'workbench.action.tasks.allowAutomaticRunning';
-	public static readonly LABEL = nls.localize('workbench.action.tasks.allowAutomaticRunning', "Allow Automatic Tasks in Folder");
+	public static readonly ID = 'workbench.action.tasks.manageAutomaticRunning';
+	public static readonly LABEL = nls.localize('workbench.action.tasks.manageAutomaticRunning', "Manage Automatic Tasks in Folder");
 
-	constructor(
-		id: string, label: string,
-		@IStorageService private readonly storageService: IStorageService
-	) {
-		super(id, label);
+	constructor() {
+		super({
+			id: ManageAutomaticTaskRunning.ID,
+			title: ManageAutomaticTaskRunning.LABEL,
+			category: TASKS_CATEGORY
+		});
 	}
 
-	public run(event?: any): Promise<any> {
-		this.storageService.store(ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE, true, StorageScope.WORKSPACE);
-		return Promise.resolve(undefined);
-	}
-}
+	public async run(accessor: ServicesAccessor): Promise<any> {
+		const quickInputService = accessor.get(IQuickInputService);
+		const storageService = accessor.get(IStorageService);
+		const allowItem: IQuickPickItem = { label: nls.localize('workbench.action.tasks.allowAutomaticTasks', "Allow Automatic Tasks in Folder") };
+		const disallowItem: IQuickPickItem = { label: nls.localize('workbench.action.tasks.disallowAutomaticTasks', "Disallow Automatic Tasks in Folder") };
+		const value = await quickInputService.pick([allowItem, disallowItem], { canPickMany: false });
+		if (!value) {
+			return;
+		}
 
-export class DisallowAutomaticTaskRunning extends Action {
-
-	public static readonly ID = 'workbench.action.tasks.disallowAutomaticRunning';
-	public static readonly LABEL = nls.localize('workbench.action.tasks.disallowAutomaticRunning', "Disallow Automatic Tasks in Folder");
-
-	constructor(
-		id: string, label: string,
-		@IStorageService private readonly storageService: IStorageService
-	) {
-		super(id, label);
-	}
-
-	public run(event?: any): Promise<any> {
-		this.storageService.store(ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE, false, StorageScope.WORKSPACE);
-		return Promise.resolve(undefined);
+		storageService.store(ARE_AUTOMATIC_TASKS_ALLOWED_IN_WORKSPACE, value === allowItem, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 }

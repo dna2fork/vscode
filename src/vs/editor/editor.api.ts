@@ -3,17 +3,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { EDITOR_DEFAULTS, WrappingIndent } from 'vs/editor/common/config/editorOptions';
+import { EditorOptions, WrappingIndent, EditorAutoIndentStrategy } from 'vs/editor/common/config/editorOptions';
 import { createMonacoBaseAPI } from 'vs/editor/common/standalone/standaloneBase';
 import { createMonacoEditorAPI } from 'vs/editor/standalone/browser/standaloneEditor';
 import { createMonacoLanguagesAPI } from 'vs/editor/standalone/browser/standaloneLanguages';
 
-const global: any = self;
-
 // Set defaults for standalone editor
-(<any>EDITOR_DEFAULTS).wrappingIndent = WrappingIndent.None;
-(<any>EDITOR_DEFAULTS.viewInfo).glyphMargin = false;
-(<any>EDITOR_DEFAULTS).autoIndent = false;
+EditorOptions.wrappingIndent.defaultValue = WrappingIndent.None;
+EditorOptions.glyphMargin.defaultValue = false;
+EditorOptions.autoIndent.defaultValue = EditorAutoIndentStrategy.Advanced;
+EditorOptions.overviewRulerLanes.defaultValue = 2;
 
 const api = createMonacoBaseAPI();
 api.editor = createMonacoEditorAPI();
@@ -33,13 +32,15 @@ export const Token = api.Token;
 export const editor = api.editor;
 export const languages = api.languages;
 
-global.monaco = api;
+self.monaco = api;
 
-if (typeof global.require !== 'undefined' && typeof global.require.config === 'function') {
-	global.require.config({
+if (typeof self.require !== 'undefined' && typeof self.require.config === 'function') {
+	self.require.config({
 		ignoreDuplicateModules: [
 			'vscode-languageserver-types',
 			'vscode-languageserver-types/main',
+			'vscode-languageserver-textdocument',
+			'vscode-languageserver-textdocument/main',
 			'vscode-nls',
 			'vscode-nls/vscode-nls',
 			'jsonc-parser',

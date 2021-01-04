@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import * as DOM from 'vs/base/browser/dom';
 import { Button } from 'vs/base/browser/ui/button/button';
 import { IAction } from 'vs/base/common/actions';
 import { DisposableStore, IDisposable } from 'vs/base/common/lifecycle';
@@ -14,7 +13,7 @@ import { IThemeService } from 'vs/platform/theme/common/themeService';
 export class CommentFormActions implements IDisposable {
 	private _buttonElements: HTMLElement[] = [];
 	private readonly _toDispose = new DisposableStore();
-	private _actions: IAction[];
+	private _actions: IAction[] = [];
 
 	constructor(
 		private container: HTMLElement,
@@ -25,7 +24,7 @@ export class CommentFormActions implements IDisposable {
 	setActions(menu: IMenu) {
 		this._toDispose.clear();
 
-		this._buttonElements.forEach(b => DOM.removeNode(b));
+		this._buttonElements.forEach(b => b.remove());
 
 		const groups = menu.getActions({ shouldForwardArgs: true });
 		for (const group of groups) {

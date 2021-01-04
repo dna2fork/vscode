@@ -18,16 +18,23 @@ import { IFileMatch, IFileSearchStats, IFolderQuery, ISearchComplete, ISearchPro
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { NullTelemetryService } from 'vs/platform/telemetry/common/telemetryUtils';
 import { SearchModel } from 'vs/workbench/contrib/search/common/searchModel';
+import * as process from 'vs/base/common/process';
+import { IThemeService } from 'vs/platform/theme/common/themeService';
+import { TestThemeService } from 'vs/platform/theme/test/common/testThemeService';
+import { FileService } from 'vs/platform/files/common/fileService';
+import { NullLogService } from 'vs/platform/log/common/log';
+import { IUriIdentityService } from 'vs/workbench/services/uriIdentity/common/uriIdentity';
+import { UriIdentityService } from 'vs/workbench/services/uriIdentity/common/uriIdentityService';
 
 const nullEvent = new class {
-	id: number;
-	topic: string;
-	name: string;
-	description: string;
+	id: number = -1;
+	topic!: string;
+	name!: string;
+	description!: string;
 	data: any;
 
-	startTime: Date;
-	stopTime: Date;
+	startTime!: Date;
+	stopTime!: Date;
 
 	stop(): void {
 		return;
@@ -69,6 +76,11 @@ suite('SearchModel', () => {
 		instantiationService.stub(IModelService, stubModelService(instantiationService));
 		instantiationService.stub(ISearchService, {});
 		instantiationService.stub(ISearchService, 'textSearch', Promise.resolve({ results: [] }));
+		instantiationService.stub(IUriIdentityService, new UriIdentityService(new FileService(new NullLogService())));
+
+		const config = new TestConfigurationService();
+		config.setUserConfiguration('search', { searchOnType: true });
+		instantiationService.stub(IConfigurationService, config);
 	});
 
 	teardown(() => {
@@ -130,7 +142,7 @@ suite('SearchModel', () => {
 		const actual = testObject.searchResult.matches();
 
 		assert.equal(2, actual.length);
-		assert.equal('file://c:/1', actual[0].resource().toString());
+		assert.equal('file://c:/1', actual[0].resource.toString());
 
 		let actuaMatches = actual[0].matches();
 		assert.equal(2, actuaMatches.length);
@@ -323,6 +335,7 @@ suite('SearchModel', () => {
 
 	function stubModelService(instantiationService: TestInstantiationService): IModelService {
 		instantiationService.stub(IConfigurationService, new TestConfigurationService());
+		instantiationService.stub(IThemeService, new TestThemeService());
 		return instantiationService.createInstance(ModelServiceImpl);
 	}
 

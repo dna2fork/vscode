@@ -16,7 +16,8 @@
   "activationEvents": [
     "*"
   ],
-  "main": "./out/extension",
+  "main": "./out/mergeConflictMain",
+  "browser": "./dist/browser/mergeConflictMain",
   "scripts": {
     "compile": "gulp compile-extension:merge-conflict",
     "watch": "gulp watch-extension:merge-conflict"
@@ -138,6 +139,6 @@
     "vscode-nls": "^4.0.0"
   },
   "devDependencies": {
-    "@types/node": "^10.14.8"
+    "@types/node": "^12.19.9"
   }
 }

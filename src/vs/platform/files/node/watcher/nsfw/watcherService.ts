@@ -3,24 +3,24 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { getNextTickChannel } from 'vs/base/parts/ipc/common/ipc';
+import { createChannelSender, getNextTickChannel } from 'vs/base/parts/ipc/common/ipc';
 import { Client } from 'vs/base/parts/ipc/node/ipc.cp';
 import { IDiskFileChange, ILogMessage } from 'vs/platform/files/node/watcher/watcher';
-import { WatcherChannelClient } from 'vs/platform/files/node/watcher/nsfw/watcherIpc';
 import { Disposable } from 'vs/base/common/lifecycle';
-import { IWatcherRequest } from 'vs/platform/files/node/watcher/nsfw/watcher';
-import { getPathFromAmdModule } from 'vs/base/common/amd';
+import { IWatcherRequest, IWatcherService } from 'vs/platform/files/node/watcher/nsfw/watcher';
+import { FileAccess } from 'vs/base/common/network';
 
 export class FileWatcher extends Disposable {
+
 	private static readonly MAX_RESTARTS = 5;
 
-	private service: WatcherChannelClient;
+	private service: IWatcherService | undefined;
 	private isDisposed: boolean;
 	private restartCounter: number;
 
 	constructor(
 		private folders: IWatcherRequest[],
-		private onFileChanges: (changes: IDiskFileChange[]) => void,
+		private onDidFilesChange: (changes: IDiskFileChange[]) => void,
 		private onLogMessage: (msg: ILogMessage) => void,
 		private verboseLogging: boolean,
 	) {
@@ -34,7 +34,7 @@ export class FileWatcher extends Disposable {
 
 	private startWatching(): void {
 		const client = this._register(new Client(
-			getPathFromAmdModule(require, 'bootstrap-fork'),
+			FileAccess.asFileUri('bootstrap-fork', require).fsPath,
 			{
 				serverName: 'File Watcher (nsfw)',
 				args: ['--type=watcherService'],
@@ -61,15 +61,12 @@ export class FileWatcher extends Disposable {
 		}));
 
 		// Initialize watcher
-		const channel = getNextTickChannel(client.getChannel('watcher'));
-		this.service = new WatcherChannelClient(channel);
+		this.service = createChannelSender<IWatcherService>(getNextTickChannel(client.getChannel('watcher')));
 
 		this.service.setVerboseLogging(this.verboseLogging);
 
-		const options = {};
-		this._register(this.service.watch(options)(e => !this.isDisposed && this.onFileChanges(e)));
-
-		this._register(this.service.onLogMessage(m => this.onLogMessage(m)));
+		this._register(this.service.onDidChangeFile(e => !this.isDisposed && this.onDidFilesChange(e)));
+		this._register(this.service.onDidLogMessage(m => this.onLogMessage(m)));
 
 		// Start watching
 		this.setFolders(this.folders);
@@ -77,7 +74,7 @@ export class FileWatcher extends Disposable {
 
 	setVerboseLogging(verboseLogging: boolean): void {
 		this.verboseLogging = verboseLogging;
-		if (!this.isDisposed) {
+		if (!this.isDisposed && this.service) {
 			this.service.setVerboseLogging(verboseLogging);
 		}
 	}
@@ -89,7 +86,9 @@ export class FileWatcher extends Disposable {
 	setFolders(folders: IWatcherRequest[]): void {
 		this.folders = folders;
 
-		this.service.setRoots(folders);
+		if (this.service) {
+			this.service.setRoots(folders);
+		}
 	}
 
 	dispose(): void {

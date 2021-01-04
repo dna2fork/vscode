@@ -55,9 +55,10 @@ function assertDiff(originalLines: string[], modifiedLines: string[], expectedCh
 		shouldComputeCharChanges,
 		shouldPostProcessCharChanges,
 		shouldIgnoreTrimWhitespace,
-		shouldMakePrettyDiff: true
+		shouldMakePrettyDiff: true,
+		maxComputationTime: 0
 	});
-	let changes = diffComputer.computeDiff();
+	let changes = diffComputer.computeDiff().changes;
 
 	let extracted: IChange[] = [];
 	for (let i = 0; i < changes.length; i++) {
@@ -847,6 +848,33 @@ suite('Editor Diff - DiffComputer', () => {
 			),
 			createLineChange(
 				25, 55, 31, 0
+			)
+		];
+		assertDiff(original, modified, expected, false, false, false);
+	});
+
+	test('gives preference to matching longer lines', () => {
+		let original = [
+			'A',
+			'A',
+			'BB',
+			'C',
+		];
+		let modified = [
+			'A',
+			'BB',
+			'A',
+			'D',
+			'E',
+			'A',
+			'C',
+		];
+		let expected = [
+			createLineChange(
+				2, 2, 1, 0
+			),
+			createLineChange(
+				3, 0, 3, 6
 			)
 		];
 		assertDiff(original, modified, expected, false, false, false);

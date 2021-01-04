@@ -50,8 +50,8 @@ function factory(nodeRequire, path, fs, perf) {
 	 * @param {string} dir
 	 * @returns {Promise<string>}
 	 */
-	function mkdir(dir) {
-		return new Promise((c, e) => fs.mkdir(dir, err => (err && err.code !== 'EEXIST') ? e(err) : c(dir)));
+	function mkdirp(dir) {
+		return new Promise((c, e) => fs.mkdir(dir, { recursive: true }, err => (err && err.code !== 'EEXIST') ? e(err) : c(dir)));
 	}
 
 	/**
@@ -87,24 +87,6 @@ function factory(nodeRequire, path, fs, perf) {
 			if (err.code === 'ENOENT') {
 				return undefined;
 			}
-			throw err;
-		});
-	}
-
-	/**
-	 * @param {string} dir
-	 * @returns {Promise<string>}
-	 */
-	function mkdirp(dir) {
-		return mkdir(dir).then(null, err => {
-			if (err && err.code === 'ENOENT') {
-				const parent = path.dirname(dir);
-
-				if (parent !== dir) { // if not arrived at root
-					return mkdirp(parent).then(() => mkdir(dir));
-				}
-			}
-
 			throw err;
 		});
 	}
@@ -204,10 +186,10 @@ function factory(nodeRequire, path, fs, perf) {
 
 		const initialLocale = locale;
 
-		perf.mark('nlsGeneration:start');
+		perf.mark('code/willGenerateNls');
 
 		const defaultResult = function (locale) {
-			perf.mark('nlsGeneration:end');
+			perf.mark('code/didGenerateNls');
 			return Promise.resolve({ locale: locale, availableLanguages: {} });
 		};
 		try {
@@ -258,7 +240,7 @@ function factory(nodeRequire, path, fs, perf) {
 							if (fileExists) {
 								// We don't wait for this. No big harm if we can't touch
 								touch(coreLocation).catch(() => { });
-								perf.mark('nlsGeneration:end');
+								perf.mark('code/didGenerateNls');
 								return result;
 							}
 							return mkdirp(coreLocation).then(() => {
@@ -268,10 +250,10 @@ function factory(nodeRequire, path, fs, perf) {
 								const packData = JSON.parse(values[1]).contents;
 								const bundles = Object.keys(metadata.bundles);
 								const writes = [];
-								for (let bundle of bundles) {
+								for (const bundle of bundles) {
 									const modules = metadata.bundles[bundle];
 									const target = Object.create(null);
-									for (let module of modules) {
+									for (const module of modules) {
 										const keys = metadata.keys[module];
 										const defaultMessages = metadata.messages[module];
 										const translations = packData[module];
@@ -297,7 +279,7 @@ function factory(nodeRequire, path, fs, perf) {
 								writes.push(writeFile(translationsConfigFile, JSON.stringify(packConfig.translations)));
 								return Promise.all(writes);
 							}).then(() => {
-								perf.mark('nlsGeneration:end');
+								perf.mark('code/didGenerateNls');
 								return result;
 							}).catch(err => {
 								console.error('Generating translation files failed.', err);

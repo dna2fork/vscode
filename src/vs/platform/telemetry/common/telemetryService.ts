@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import product from 'vs/platform/product/common/product';
 import { localize } from 'vs/nls';
 import { escapeRegExpCharacters } from 'vs/base/common/strings';
 import { ITelemetryService, ITelemetryInfo, ITelemetryData } from 'vs/platform/telemetry/common/telemetry';
@@ -10,32 +11,34 @@ import { ITelemetryAppender } from 'vs/platform/telemetry/common/telemetryUtils'
 import { optional } from 'vs/platform/instantiation/common/instantiation';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IConfigurationRegistry, Extensions } from 'vs/platform/configuration/common/configurationRegistry';
-import { IDisposable, dispose } from 'vs/base/common/lifecycle';
+import { DisposableStore } from 'vs/base/common/lifecycle';
 import { cloneAndChange, mixin } from 'vs/base/common/objects';
 import { Registry } from 'vs/platform/registry/common/platform';
 import { ClassifiedEvent, StrictPropertyCheck, GDPRClassification } from 'vs/platform/telemetry/common/gdprTypings';
 
 export interface ITelemetryServiceConfig {
 	appender: ITelemetryAppender;
+	sendErrorTelemetry?: boolean;
 	commonProperties?: Promise<{ [name: string]: any }>;
 	piiPaths?: string[];
-	trueMachineId?: string;
 }
 
 export class TelemetryService implements ITelemetryService {
 
-	static IDLE_START_EVENT_NAME = 'UserIdleStart';
-	static IDLE_STOP_EVENT_NAME = 'UserIdleStop';
+	static readonly IDLE_START_EVENT_NAME = 'UserIdleStart';
+	static readonly IDLE_STOP_EVENT_NAME = 'UserIdleStop';
 
-	_serviceBrand: any;
+	declare readonly _serviceBrand: undefined;
 
 	private _appender: ITelemetryAppender;
 	private _commonProperties: Promise<{ [name: string]: any; }>;
+	private _experimentProperties: { [name: string]: string } = {};
 	private _piiPaths: string[];
 	private _userOptIn: boolean;
 	private _enabled: boolean;
+	public readonly sendErrorTelemetry: boolean;
 
-	private _disposables: IDisposable[] = [];
+	private readonly _disposables = new DisposableStore();
 	private _cleanupPatterns: RegExp[] = [];
 
 	constructor(
@@ -47,6 +50,7 @@ export class TelemetryService implements ITelemetryService {
 		this._piiPaths = config.piiPaths || [];
 		this._userOptIn = true;
 		this._enabled = true;
+		this.sendErrorTelemetry = !!config.sendErrorTelemetry;
 
 		// static cleanup pattern for: `file:///DANGEROUS/PATH/resources/app/Useful/Information`
 		this._cleanupPatterns = [/file:\/\/\/.*?\/resources\/app\//gi];
@@ -69,23 +73,16 @@ export class TelemetryService implements ITelemetryService {
 			this._commonProperties.then(values => {
 				const isHashedId = /^[a-f0-9]+$/i.test(values['common.machineId']);
 
-				/* __GDPR__
-					"machineIdFallback" : {
-						"usingFallbackGuid" : { "classification": "SystemMetaData", "purpose": "BusinessInsight", "isMeasurement": true }
-					}
-				*/
-				this.publicLog('machineIdFallback', { usingFallbackGuid: !isHashedId });
-
-				if (config.trueMachineId) {
-					/* __GDPR__
-						"machineIdDisambiguation" : {
-							"correctedMachineId" : { "endPoint": "MacAddressHash", "classification": "EndUserPseudonymizedInformation", "purpose": "FeatureInsight" }
-						}
-					*/
-					this.publicLog('machineIdDisambiguation', { correctedMachineId: config.trueMachineId });
-				}
+				type MachineIdFallbackClassification = {
+					usingFallbackGuid: { classification: 'SystemMetaData', purpose: 'BusinessInsight', isMeasurement: true };
+				};
+				this.publicLog2<{ usingFallbackGuid: boolean }, MachineIdFallbackClassification>('machineIdFallback', { usingFallbackGuid: !isHashedId });
 			});
 		}
+	}
+
+	setExperimentProperty(name: string, value: string): void {
+		this._experimentProperties[name] = value;
 	}
 
 	setEnabled(value: boolean): void {
@@ -93,7 +90,7 @@ export class TelemetryService implements ITelemetryService {
 	}
 
 	private _updateUserOptIn(): void {
-		const config = this._configurationService.getValue<any>(TELEMETRY_SECTION_ID);
+		const config = this._configurationService?.getValue<any>(TELEMETRY_SECTION_ID);
 		this._userOptIn = config ? config.enableTelemetry : this._userOptIn;
 	}
 
@@ -108,12 +105,13 @@ export class TelemetryService implements ITelemetryService {
 		let sessionId = values['sessionID'];
 		let instanceId = values['common.instanceId'];
 		let machineId = values['common.machineId'];
+		let msftInternal = values['common.msftInternal'];
 
-		return { sessionId, instanceId, machineId };
+		return { sessionId, instanceId, machineId, msftInternal };
 	}
 
 	dispose(): void {
-		this._disposables = dispose(this._disposables);
+		this._disposables.dispose();
 	}
 
 	publicLog(eventName: string, data?: ITelemetryData, anonymizeFilePaths?: boolean): Promise<any> {
@@ -126,6 +124,9 @@ export class TelemetryService implements ITelemetryService {
 
 			// (first) add common properties
 			data = mixin(data, values);
+
+			// (next) add experiment properties
+			data = mixin(data, this._experimentProperties);
 
 			// (last) remove all PII from data
 			data = cloneAndChange(data, value => {
@@ -145,6 +146,19 @@ export class TelemetryService implements ITelemetryService {
 
 	publicLog2<E extends ClassifiedEvent<T> = never, T extends GDPRClassification<T> = never>(eventName: string, data?: StrictPropertyCheck<T, E>, anonymizeFilePaths?: boolean): Promise<any> {
 		return this.publicLog(eventName, data as ITelemetryData, anonymizeFilePaths);
+	}
+
+	publicLogError(errorEventName: string, data?: ITelemetryData): Promise<any> {
+		if (!this.sendErrorTelemetry) {
+			return Promise.resolve(undefined);
+		}
+
+		// Send error event and anonymize paths
+		return this.publicLog(errorEventName, data, true);
+	}
+
+	publicLogError2<E extends ClassifiedEvent<T> = never, T extends GDPRClassification<T> = never>(eventName: string, data?: StrictPropertyCheck<T, E>): Promise<any> {
+		return this.publicLogError(eventName, data as ITelemetryData);
 	}
 
 	private _cleanupInfo(stack: string, anonymizeFilePaths?: boolean): string {
@@ -194,6 +208,7 @@ export class TelemetryService implements ITelemetryService {
 
 const TELEMETRY_SECTION_ID = 'telemetry';
 
+
 Registry.as<IConfigurationRegistry>(Extensions.Configuration).registerConfiguration({
 	'id': TELEMETRY_SECTION_ID,
 	'order': 110,
@@ -202,7 +217,10 @@ Registry.as<IConfigurationRegistry>(Extensions.Configuration).registerConfigurat
 	'properties': {
 		'telemetry.enableTelemetry': {
 			'type': 'boolean',
-			'description': localize('telemetry.enableTelemetry', "Enable usage data and errors to be sent to a Microsoft online service."),
+			'markdownDescription':
+				!product.privacyStatementUrl ?
+					localize('telemetry.enableTelemetry', "Enable usage data and errors to be sent to a Microsoft online service.") :
+					localize('telemetry.enableTelemetryMd', "Enable usage data and errors to be sent to a Microsoft online service. Read our privacy statement [here]({0}).", product.privacyStatementUrl),
 			'default': true,
 			'tags': ['usesOnlineServices']
 		}
